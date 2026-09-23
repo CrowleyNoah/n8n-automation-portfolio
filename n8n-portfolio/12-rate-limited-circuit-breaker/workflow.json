@@ -1,0 +1,1655 @@
+{
+  "name": "12 - Rate-Limited API Integration with Circuit Breaker",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gateway/fetch",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-webhook",
+      "name": "API Gateway Fetch Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -3600,
+        -500
+      ],
+      "notes": "{ integration, resource_path, params?, cache_key, max_staleness_seconds? }. A generic front door other workflows call instead of hitting a rate-limited third-party API directly -- this is where the rate limiting, breaker, and degrade logic live, once, instead of copy-pasted into every caller.",
+      "webhookId": "gateway-fetch-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || {};\nconst errors = [];\nif (!body.integration) errors.push('integration is required');\nif (!body.resource_path) errors.push('resource_path is required');\nif (!body.cache_key) errors.push('cache_key is required');\nreturn [{ json: { valid: errors.length === 0, errors,\n  integration: body.integration, resource_path: body.resource_path, params: body.params || {},\n  cache_key: body.cache_key, max_staleness_seconds: body.max_staleness_seconds ?? null } }];"
+      },
+      "id": "g-validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -3380,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-validate-if",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -3160,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'invalid_request', details: $json.errors } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "g-respond-400",
+      "name": "Respond 400 (Invalid Request)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -2940,
+        -360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-breaker-get",
+      "name": "Get Breaker State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2940,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "g-breaker-merge",
+      "name": "Merge Breaker + Request",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -2720,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst found = t.statusCode >= 200 && t.statusCode < 300;\nconst state = found ? (t.body || {}) : {};\nconst status = state.status || 'closed'; // closed | open\nconst now = Date.now();\nlet breaker_status;\nif (status === 'closed') breaker_status = 'closed';\nelse if (now >= (state.next_probe_at || 0)) breaker_status = 'open_due_probe';\nelse breaker_status = 'open_no_probe';\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params,\n  cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds,\n  breaker_status, next_probe_at: state.next_probe_at || null, trip_count: state.trip_count || 0 } }];"
+      },
+      "id": "g-breaker-eval",
+      "name": "Evaluate Breaker State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -2500,
+        -500
+      ],
+      "notes": "'open_no_probe' means the breaker is open and its cooldown hasn't elapsed -- skip straight to degrade, don't even ask for a rate-limit token. 'open_due_probe' means it's time to test recovery with exactly one call."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.breaker_status }}",
+                    "rightValue": "closed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "closed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.breaker_status }}",
+                    "rightValue": "open_due_probe",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "open_due_probe"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.breaker_status }}",
+                    "rightValue": "open_no_probe",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "open_no_probe"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "g-breaker-router",
+      "name": "Route by Breaker Status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -2280,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}/claim-probe",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "ttl_seconds",
+              "value": 10
+            }
+          ]
+        }
+      },
+      "id": "g-probe-claim",
+      "name": "Claim Probe Slot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2060,
+        -680
+      ],
+      "notes": "Atomic compare-and-set, valid for 10s -- when the breaker just opened and several queued requests all become eligible for the same probe window, only one of them actually calls the flaky API; the rest fall straight through to degrade. Without this, 'half-open' would mean 'let everyone through at once and see what breaks', which defeats the point."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "g-probe-merge",
+      "name": "Merge Probe Claim + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -1840,
+        -680
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($json.statusCode >= 200 && $json.statusCode < 300) && $json.body && $json.body.claimed === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-probe-if",
+      "name": "Probe Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1620,
+        -680
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, is_probe: true, attempt: 1 } }];"
+      },
+      "id": "g-probe-init",
+      "name": "Init Call State (Probe)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        -740
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.RATE_LIMIT_API_URL }}/rate-limit/{{ $json.integration }}/consume",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "tokens",
+              "value": 1
+            }
+          ]
+        }
+      },
+      "id": "g-rate-consume",
+      "name": "Consume Rate Limit Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2060,
+        -420
+      ],
+      "notes": "One atomic call: check-and-decrement the token bucket server-side, not a separate check-then-consume pair -- the latter is the same TOCTOU race handled the same way in workflow 11's document numbering."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "g-rate-merge",
+      "name": "Merge Rate Limit + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -1840,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($json.statusCode >= 200 && $json.statusCode < 300) && $json.body && $json.body.allowed === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-rate-if",
+      "name": "Token Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1620,
+        -420
+      ],
+      "notes": "This is a proactive, self-imposed rate limit (a token bucket sized to the provider's documented quota) -- not just reacting to 429s after the fact. It exists specifically to avoid ever hitting the provider's real limit in the first place."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, is_probe: false, attempt: 1 } }];"
+      },
+      "id": "g-rate-init",
+      "name": "Init Call State (Normal)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst body = (t.statusCode >= 200 && t.statusCode < 300) ? (t.body || {}) : {};\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds,\n  degrade_reason: 'rate_limit_exhausted', retry_after_seconds: body.retry_after_seconds || 30 } }];"
+      },
+      "id": "g-rate-no-token",
+      "name": "Mark Degrade: No Token Available",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds,\n  degrade_reason: 'breaker_open', retry_after_seconds: Math.max(1, Math.round((t.next_probe_at - Date.now()) / 1000)) } }];"
+      },
+      "id": "g-open-no-probe-degrade",
+      "name": "Mark Degrade: Breaker Open",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -2060,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: 'probe_in_progress', retry_after_seconds: 10 } }];"
+      },
+      "id": "g-probe-lost-degrade",
+      "name": "Mark Degrade: Probe Slot Taken",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        -600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env[$json.integration.toUpperCase() + '_API_URL'] }}/{{ $json.resource_path }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify($json.params) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-call-api",
+      "name": "Call Provider API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1180,
+        -500
+      ],
+      "notes": "onError:'continueErrorOutput' is deliberate and distinct from neverError: neverError only suppresses throwing on a non-2xx HTTP status (which still lands on the normal output as a readable statusCode) -- it does nothing for a connection-level failure (DNS, refused, timeout) that never got an HTTP response at all. Those land on this node's separate error output instead, and are classified the same as a 5xx below rather than silently halting the workflow.",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "g-call-merge",
+      "name": "Merge Call Response + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -960,
+        -540
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key,\n  max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt,\n  network_error: true, error_message: (t.error && t.error.message) || 'connection error', statusCode: null, body: null } }];"
+      },
+      "id": "g-net-err-classify",
+      "name": "Build Network Error Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -960,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nlet classification;\nif (t.network_error) classification = 'transient';\nelse if (t.statusCode === 429) classification = 'rate_limited';\nelse if (t.statusCode >= 200 && t.statusCode < 300) classification = 'success';\nelse if (t.statusCode >= 500) classification = 'transient';\nelse classification = 'permanent'; // other 4xx -- our request is wrong, the provider is fine\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key,\n  max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt,\n  statusCode: t.statusCode, body: t.body, headers: t.headers || {}, classification } }];"
+      },
+      "id": "g-classify",
+      "name": "Classify Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -740,
+        -500
+      ],
+      "notes": "429 is kept distinct from a generic 5xx on purpose: it means 'you're fine, just slow down,' not 'something is broken.' It's handled with Retry-After-aware backoff and doesn't count toward the circuit breaker's failure threshold the way a real server error does."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "success",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "success"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "rate_limited",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "rate_limited"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "transient",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "transient"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification }}",
+                    "rightValue": "permanent",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "permanent"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "g-route-class",
+      "name": "Route by Classification",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -520,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}/record-success",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "is_probe",
+              "value": "={{ $json.is_probe }}"
+            }
+          ]
+        }
+      },
+      "id": "g-s-record",
+      "name": "Record Breaker Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -300,
+        -800
+      ],
+      "notes": "A successful probe fully closes the breaker and resets its failure/trip counters server-side -- a successful call while already closed just resets the failure streak. Fire-and-forget: it doesn't gate the response, since the fetch itself already succeeded."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CACHE_API_URL }}/cache/{{ $json.cache_key }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "body",
+              "value": "={{ JSON.stringify($json.body) }}"
+            },
+            {
+              "name": "cached_at",
+              "value": "={{ Date.now() }}"
+            }
+          ]
+        }
+      },
+      "id": "g-s-cache-write",
+      "name": "Write Cache (Last-Known-Good)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -300,
+        -560
+      ],
+      "notes": "Every fresh success refreshes the degrade-path cache -- a cache write failure here costs a little staleness next time something goes wrong, never the current, already-successful response."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { data: $json.body, stale: false, served_from: 'live' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "g-s-respond",
+      "name": "Respond 200 (Fresh)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        -680
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst raw = (t.headers && (t.headers['retry-after'] || t.headers['Retry-After'])) || null;\nlet retry_after_seconds = 5; // sane default if the provider didn't send one\nif (raw) {\n  const asInt = parseInt(raw, 10);\n  if (!Number.isNaN(asInt) && String(asInt) === String(raw).trim()) retry_after_seconds = asInt; // seconds form\n  else { const asDate = new Date(raw); if (!isNaN(asDate.getTime())) retry_after_seconds = Math.max(1, Math.round((asDate.getTime() - Date.now()) / 1000)); } // HTTP-date form\n}\nreturn [{ json: { ...t, retry_after_seconds: Math.min(retry_after_seconds, 120) } }];"
+      },
+      "id": "g-rl-parse",
+      "name": "Parse Retry-After Header",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        -320
+      ],
+      "notes": "Retry-After can legally be either an integer number of seconds or an HTTP-date -- both forms are handled, and the result is capped at 120s regardless of what the header says, since this is answering a synchronous webhook, not a background job that can wait indefinitely."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.attempt }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            },
+            {
+              "leftValue": "={{ $json.is_probe }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-rl-max-if",
+      "name": "Rate-Limit Retry Attempts Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -320
+      ],
+      "notes": "A probe call never retries in place -- a probe is one shot to test recovery; if it gets rate-limited, that's still useful information (the breaker stays open) rather than spending the one probe slot's TTL on retries."
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.retry_after_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "g-rl-wait",
+      "name": "Wait (Retry-After)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        140,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt + 1 } }];"
+      },
+      "id": "g-rl-increment",
+      "name": "Increment Attempt (Rate Limited)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        360,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: 'rate_limited_retries_exhausted', retry_after_seconds: t.retry_after_seconds } }];"
+      },
+      "id": "g-rl-exhausted-degrade",
+      "name": "Mark Degrade: Rate Limited (Exhausted)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        140,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}/record-failure",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "is_probe",
+              "value": "={{ $json.is_probe }}"
+            },
+            {
+              "name": "error_message",
+              "value": "={{ $json.network_error ? 'connection error' : ('HTTP ' + $json.statusCode) }}"
+            }
+          ]
+        }
+      },
+      "id": "g-tr-record",
+      "name": "Record Breaker Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -300,
+        -60
+      ],
+      "notes": "A failed probe re-opens the breaker immediately with a longer cooldown (the store doubles it per trip, capped) rather than waiting out a fresh failure-threshold count -- one bad probe is enough evidence the provider still isn't healthy."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "g-tr-merge",
+      "name": "Merge Breaker Failure + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -80,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.attempt }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            },
+            {
+              "leftValue": "={{ $json.is_probe }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-tr-max-if",
+      "name": "Transient Retry Attempts Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        140,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst BASE_MS = 500;\nconst backoff_ms = BASE_MS * Math.pow(2, t.attempt - 1); // 500ms, 1s, 2s\nconst jitter_ms = Math.floor(Math.random() * 250);\nreturn [{ json: { ...t, wait_seconds: Math.round((backoff_ms + jitter_ms) / 100) / 10 } }];"
+      },
+      "id": "g-tr-backoff-calc",
+      "name": "Compute Jittered Backoff",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        360,
+        20
+      ],
+      "notes": "Exponential (500ms / 1s / 2s) plus up to 250ms jitter -- small numbers on purpose, since this is a synchronous webhook path and the caller is still waiting; workflow 10's monitor uses minutes-scale backoff for a background retry, this uses sub-second-to-low-second because the context is completely different."
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.wait_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "g-tr-wait",
+      "name": "Wait (Backoff)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        580,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt + 1 } }];"
+      },
+      "id": "g-tr-increment",
+      "name": "Increment Attempt (Transient)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        800,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: t.is_probe ? 'probe_failed' : 'transient_retries_exhausted', retry_after_seconds: 30 } }];"
+      },
+      "id": "g-tr-exhausted-degrade",
+      "name": "Mark Degrade: Transient (Exhausted)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        140,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'upstream_client_error', upstream_status: $json.statusCode, upstream_body: $json.body } }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}"
+        }
+      },
+      "id": "g-perm-respond",
+      "name": "Respond (Permanent Error, Passthrough)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        160
+      ],
+      "notes": "A 4xx that isn't 429 means the request we sent is wrong (bad params, missing auth, not found), not that the provider is unhealthy. Mirroring the status back to the original caller, untouched by retry or breaker logic, is the honest answer -- retrying a malformed request three times with backoff would just be slower wrongness."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CACHE_API_URL }}/cache/{{ $json.cache_key }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-dg-cache-get",
+      "name": "Get Cached Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1020,
+        -60
+      ],
+      "notes": "A cache miss here is the normal shape for an integration that's never succeeded yet, not an error -- handled explicitly below rather than assumed to always exist."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "g-dg-cache-merge",
+      "name": "Merge Cache + Degrade Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1240,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst found = t.statusCode >= 200 && t.statusCode < 300 && t.body && t.body.cached_at;\nconst age_seconds = found ? Math.round((Date.now() - t.body.cached_at) / 1000) : null;\nconst within_tolerance = t.max_staleness_seconds == null ? true : (age_seconds !== null && age_seconds <= t.max_staleness_seconds);\nconst usable = Boolean(found) && within_tolerance;\nlet cached_body = null;\nif (found) { try { cached_body = JSON.parse(t.body.body); } catch (e) { cached_body = t.body.body; } }\nreturn [{ json: { usable, cached_body, age_seconds, degrade_reason: t.degrade_reason, retry_after_seconds: t.retry_after_seconds } }];"
+      },
+      "id": "g-dg-eval",
+      "name": "Evaluate Cache Usability",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1460,
+        -60
+      ],
+      "notes": "max_staleness_seconds is caller-controlled on purpose -- a dashboard widget might happily take an hour-old cached value, while a payment-status check might rather fail loudly than show stale data. When the caller doesn't specify it, any cache hit at all is considered usable."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.usable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-dg-if",
+      "name": "Cache Usable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { data: $json.cached_body, stale: true, served_from: 'cache', age_seconds: $json.age_seconds, degrade_reason: $json.degrade_reason } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "g-dg-respond-stale",
+      "name": "Respond 200 (Stale, Degraded)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        -140
+      ],
+      "notes": "Graceful degradation's whole payoff: the caller gets a usable answer and an honest 'this is stale and why' instead of an outage propagating straight through to them."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'upstream_unavailable', reason: $json.degrade_reason, retry_after_seconds: $json.retry_after_seconds, cache_available: $json.age_seconds !== null } }}",
+        "options": {
+          "responseCode": 503,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "={{ String($json.retry_after_seconds) }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "g-dg-respond-503",
+      "name": "Respond 503 (Unavailable)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        20
+      ],
+      "notes": "Even the failure response is actionable -- a Retry-After header and an explicit reason (breaker open / rate limited / provider erroring) rather than a bare 503, and cache_available:false tells the caller this integration has literally never succeeded yet, which is a different problem than 'temporarily down'."
+    }
+  ],
+  "connections": {
+    "API Gateway Fetch Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get Breaker State",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Breaker + Request",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 (Invalid Request)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Breaker State": {
+      "main": [
+        [
+          {
+            "node": "Merge Breaker + Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Breaker + Request": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Breaker State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Breaker State": {
+      "main": [
+        [
+          {
+            "node": "Route by Breaker Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Breaker Status": {
+      "main": [
+        [
+          {
+            "node": "Consume Rate Limit Token",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Rate Limit + State",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Claim Probe Slot",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Probe Claim + State",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Mark Degrade: Breaker Open",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Probe Slot": {
+      "main": [
+        [
+          {
+            "node": "Merge Probe Claim + State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Probe Claim + State": {
+      "main": [
+        [
+          {
+            "node": "Probe Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Init Call State (Probe)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Degrade: Probe Slot Taken",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consume Rate Limit Token": {
+      "main": [
+        [
+          {
+            "node": "Merge Rate Limit + State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Rate Limit + State": {
+      "main": [
+        [
+          {
+            "node": "Token Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token Available?": {
+      "main": [
+        [
+          {
+            "node": "Init Call State (Normal)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Degrade: No Token Available",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Call State (Probe)": {
+      "main": [
+        [
+          {
+            "node": "Call Provider API",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Call Response + State",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Init Call State (Normal)": {
+      "main": [
+        [
+          {
+            "node": "Call Provider API",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Call Response + State",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Call Provider API": {
+      "main": [
+        [
+          {
+            "node": "Merge Call Response + State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Network Error Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Call Response + State": {
+      "main": [
+        [
+          {
+            "node": "Classify Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Network Error Classification": {
+      "main": [
+        [
+          {
+            "node": "Classify Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Response": {
+      "main": [
+        [
+          {
+            "node": "Route by Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Classification": {
+      "main": [
+        [
+          {
+            "node": "Record Breaker Success",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Write Cache (Last-Known-Good)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond 200 (Fresh)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Retry-After Header",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Breaker Failure",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Breaker Failure + State",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Respond (Permanent Error, Passthrough)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Retry-After Header": {
+      "main": [
+        [
+          {
+            "node": "Rate-Limit Retry Attempts Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate-Limit Retry Attempts Left?": {
+      "main": [
+        [
+          {
+            "node": "Wait (Retry-After)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Degrade: Rate Limited (Exhausted)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait (Retry-After)": {
+      "main": [
+        [
+          {
+            "node": "Increment Attempt (Rate Limited)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Attempt (Rate Limited)": {
+      "main": [
+        [
+          {
+            "node": "Call Provider API",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Call Response + State",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Record Breaker Failure": {
+      "main": [
+        [
+          {
+            "node": "Merge Breaker Failure + State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Breaker Failure + State": {
+      "main": [
+        [
+          {
+            "node": "Transient Retry Attempts Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transient Retry Attempts Left?": {
+      "main": [
+        [
+          {
+            "node": "Compute Jittered Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Degrade: Transient (Exhausted)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Jittered Backoff": {
+      "main": [
+        [
+          {
+            "node": "Wait (Backoff)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait (Backoff)": {
+      "main": [
+        [
+          {
+            "node": "Increment Attempt (Transient)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Attempt (Transient)": {
+      "main": [
+        [
+          {
+            "node": "Call Provider API",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Call Response + State",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark Degrade: No Token Available": {
+      "main": [
+        [
+          {
+            "node": "Get Cached Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Cache + Degrade Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark Degrade: Breaker Open": {
+      "main": [
+        [
+          {
+            "node": "Get Cached Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Cache + Degrade Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark Degrade: Probe Slot Taken": {
+      "main": [
+        [
+          {
+            "node": "Get Cached Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Cache + Degrade Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark Degrade: Rate Limited (Exhausted)": {
+      "main": [
+        [
+          {
+            "node": "Get Cached Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Cache + Degrade Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark Degrade: Transient (Exhausted)": {
+      "main": [
+        [
+          {
+            "node": "Get Cached Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Cache + Degrade Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get Cached Response": {
+      "main": [
+        [
+          {
+            "node": "Merge Cache + Degrade Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Cache + Degrade Context": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Cache Usability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Cache Usability": {
+      "main": [
+        [
+          {
+            "node": "Cache Usable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Usable?": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 (Stale, Degraded)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 503 (Unavailable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

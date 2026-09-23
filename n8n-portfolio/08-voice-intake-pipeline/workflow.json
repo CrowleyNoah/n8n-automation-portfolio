@@ -1,0 +1,538 @@
+{
+  "name": "08 - Voice Intake Pipeline",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "voice/intake", "responseMode": "responseNode", "options": {} },
+      "id": "v-trigger",
+      "name": "Voice Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-3000, 0],
+      "webhookId": "voice-intake",
+      "notes": "Modeled as JSON with base64 audio for consistency with the rest of this portfolio's webhook shape; a real client (e.g. a push-to-talk web app) would more likely send multipart/form-data, which only changes how the binary is received, not the pipeline after it."
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst errors = [];\nconst allowedFormats = ['wav', 'mp3', 'ogg', 'webm'];\n\nif (!body.audio_base64 || typeof body.audio_base64 !== 'string' || body.audio_base64.length < 100) errors.push('audio_base64 is required and appears too short to be real audio');\nif (!body.audio_format || !allowedFormats.includes(body.audio_format)) errors.push(`audio_format must be one of: ${allowedFormats.join(', ')}`);\n\nconst approxBytes = body.audio_base64 ? Math.floor(body.audio_base64.length * 0.75) : 0;\nconst MAX_BYTES = 20 * 1024 * 1024;\nif (approxBytes > MAX_BYTES) errors.push('audio payload exceeds 20MB limit');\n\nif (body.duration_seconds !== undefined) {\n  if (body.duration_seconds < 0.3) errors.push('audio is too short (< 0.3s) to contain speech');\n  if (body.duration_seconds > 120) errors.push('audio exceeds 120s limit -- split into shorter clips');\n}\n\nif (errors.length) return [{ json: { valid: false, errors } }];\nreturn [{ json: { valid: true, audio_base64: body.audio_base64, audio_format: body.audio_format, session_id: body.session_id || null, has_session_id: !!body.session_id } }];"
+      },
+      "id": "v-validate",
+      "name": "Validate Audio Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2800, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "v-if-valid",
+      "name": "Payload Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-2600, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"validation_failed\", \"details\": $json.errors } }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "v-respond-400",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-2400, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.has_session_id }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "v-if-has-session-id",
+      "name": "Has Session ID?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-2400, -100]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SESSION_API_URL }}/sessions/{{ $json.session_id }}",
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "v-fetch-session",
+      "name": "Fetch Existing Session",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-2200, -180],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "v-merge-fetch-session", "name": "Merge Session + Payload", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [-2000, -180] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.exists }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "v-if-session-valid",
+      "name": "Session Still Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1800, -180],
+      "notes": "A missing or expired session (assumed reflected as exists:false by the store) degrades to a fresh session rather than erroring -- a dropped call resuming later shouldn't fail outright."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { audio_base64: t.audio_base64, audio_format: t.audio_format, session_id: t.session_id, history: t.record.history || [] } }];"
+      },
+      "id": "v-use-existing-session",
+      "name": "Use Existing Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1600, -260]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Requires NODE_FUNCTION_ALLOW_BUILTIN to include 'crypto' (same as workflows 04 and 07).\nconst crypto = require('crypto');\nconst t = $json;\nreturn [{ json: { audio_base64: t.audio_base64, audio_format: t.audio_format, session_id: crypto.randomUUID(), history: [] } }];"
+      },
+      "id": "v-new-session",
+      "name": "Start New Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1600, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Manually attach binary data -- decoding base64 into $binary is not automatic in a Code node, it has to be constructed explicitly.\nconst t = $json;\nreturn [{\n  json: { session_id: t.session_id, history: t.history, audio_format: t.audio_format },\n  binary: { data: { data: t.audio_base64, mimeType: `audio/${t.audio_format}`, fileName: `input.${t.audio_format}` } }\n}];"
+      },
+      "id": "v-decode-audio",
+      "name": "Attach Audio Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1400, -80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHISPER_API_URL }}/transcribe",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "language", "value": "auto" },
+            { "name": "file", "value": "={{ $binary.data }}", "parameterType": "formBinaryData" }
+          ]
+        },
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "v-transcribe",
+      "name": "Transcribe (Whisper STT)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1200, -80],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "v-merge-transcribe", "name": "Merge Transcript + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [-1000, -80] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "v-if-transcribe-ok",
+      "name": "Transcription OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-800, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { session_id: t.session_id, transcript: null, response_text: \"Sorry, I'm having trouble understanding audio right now. Please try again in a moment.\", language: 'en', skip_session_update: true, is_error: true } }];"
+      },
+      "id": "v-fallback-stt-failed",
+      "name": "Build STT-Failure Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, 80],
+      "notes": "Even a hard STT failure still gets a spoken (or at least text) response rather than a dead end -- it flows into the same TTS stage as every other outcome."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst text = (t.body?.text || '').trim();\nconst language = t.body?.language || 'en';\nconst segments = t.body?.segments || [];\nconst avgLogprob = segments.length ? segments.reduce((s, seg) => s + (seg.avg_logprob || 0), 0) / segments.length : -2;\nconst SUPPORTED = ['en', 'es', 'fr', 'de'];\n\nconst is_silent = text.length === 0;\nconst is_low_confidence = !is_silent && avgLogprob < -1.0;\nconst is_unsupported_language = !SUPPORTED.includes(language);\n\nreturn [{ json: { session_id: t.session_id, history: t.history, transcript: text, language, avg_logprob: avgLogprob, is_silent, is_low_confidence, is_unsupported_language } }];"
+      },
+      "id": "v-assess-transcript",
+      "name": "Assess Transcript Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, -180],
+      "notes": "avg_logprob below -1.0 is a rough, commonly-used Whisper confidence heuristic -- worth tuning against real data rather than treating as gospel."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.is_silent }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } },
+            { "leftValue": "={{ $json.is_low_confidence }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "v-if-needs-clarification",
+      "name": "Silent or Low Confidence?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-400, -180],
+      "notes": "Acting on a likely-garbled transcript is worse than asking the person to repeat themselves -- this never reaches the agent with unreliable input."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { session_id: t.session_id, transcript: t.transcript, response_text: \"Sorry, I didn't catch that -- could you say that again?\", language: 'en', skip_session_update: true } }];"
+      },
+      "id": "v-build-clarification-response",
+      "name": "Build Clarification Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-200, -60]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.is_unsupported_language }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "v-if-unsupported-language",
+      "name": "Unsupported Language?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-200, -260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { session_id: t.session_id, transcript: t.transcript, response_text: \"Sorry, I don't support that language yet -- please try again in English, Spanish, French, or German.\", language: 'en', skip_session_update: true } }];"
+      },
+      "id": "v-build-language-apology",
+      "name": "Build Language Apology",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, -340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/chat",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "session_id", "value": "={{ $json.session_id }}" },
+            { "name": "history", "value": "={{ $json.history }}" },
+            { "name": "message", "value": "={{ $json.transcript }}" }
+          ]
+        },
+        "options": { "timeout": 20000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "v-call-agent",
+      "name": "Call Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, -180],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "v-merge-agent", "name": "Merge Agent Result + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [200, -180] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "v-if-agent-ok",
+      "name": "Agent Call OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [400, -180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { session_id: t.session_id, transcript: t.transcript, response_text: \"Sorry, I'm having trouble responding right now -- please try again shortly.\", language: t.language || 'en', skip_session_update: true } }];"
+      },
+      "id": "v-build-agent-failure-response",
+      "name": "Build Agent-Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, -60]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst reply = t.body?.reply || '';\nreturn [{ json: { session_id: t.session_id, transcript: t.transcript, response_text: reply, language: t.language || 'en', skip_session_update: false } }];"
+      },
+      "id": "v-extract-agent-response",
+      "name": "Extract Agent Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, -260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SESSION_API_URL }}/sessions/{{ $json.session_id }}/turns",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "user_text", "value": "={{ $json.transcript }}" },
+            { "name": "assistant_text", "value": "={{ $json.response_text }}" }
+          ]
+        },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "v-update-session",
+      "name": "Update Session History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, -260],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "Only a real agent exchange updates history -- clarification prompts, language apologies, and error responses are transient and would pollute the conversation context for the next turn."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "v-merge-session-update", "name": "Merge Session Update + Response", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [1000, -260] },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst TTS_MAX_CHARS = 2000;\nlet speak_text = t.response_text || '';\nlet truncated_for_speech = false;\nif (speak_text.length > TTS_MAX_CHARS) {\n  speak_text = speak_text.slice(0, TTS_MAX_CHARS) + '... (see full text in response)';\n  truncated_for_speech = true;\n}\nreturn [{ json: { session_id: t.session_id, transcript: t.transcript, response_text: t.response_text, speak_text, truncated_for_speech, language: t.language } }];"
+      },
+      "id": "v-truncate-for-tts",
+      "name": "Truncate For TTS Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, -100],
+      "notes": "The TTS engine's practical length limit is a different constraint from the LLM's -- the full text still goes back in the JSON response even when the spoken version is trimmed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.COQUI_TTS_API_URL }}/synthesize",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "text", "value": "={{ $json.speak_text }}" },
+            { "name": "language", "value": "={{ $json.language }}" }
+          ]
+        },
+        "options": { "timeout": 20000, "response": { "response": { "neverError": true, "fullResponse": true, "responseFormat": "file" } } }
+      },
+      "id": "v-synthesize-tts",
+      "name": "Synthesize Speech (Coqui TTS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, -100],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "v-merge-tts", "name": "Merge TTS Result + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [1600, -100] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "v-if-tts-ok",
+      "name": "TTS Synthesis OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1800, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// $binary.data.data is n8n's internal base64 representation of the attached file -- confirmed against this n8n version's binary handling before relying on it.\nconst t = $json;\nreturn [{ json: { session_id: t.session_id, transcript: t.transcript, response_text: t.response_text, response_audio_base64: $binary.data ? $binary.data.data : null, language: t.language, has_audio: true } }];"
+      },
+      "id": "v-build-final-with-audio",
+      "name": "Build Final Response (With Audio)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, -180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { session_id: t.session_id, transcript: t.transcript, response_text: t.response_text, response_audio_base64: null, language: t.language, has_audio: false, note: 'audio synthesis failed -- text-only response returned' } }];"
+      },
+      "id": "v-build-final-text-only",
+      "name": "Build Final Response (Text Only)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, -20],
+      "notes": "A TTS outage degrades to text, not to total failure -- an important accessibility/robustness fallback, not just a nice-to-have."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.QA_ARCHIVE_API_URL }}/interactions",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "session_id", "value": "={{ $json.session_id }}" },
+            { "name": "transcript", "value": "={{ $json.transcript }}" },
+            { "name": "response_text", "value": "={{ $json.response_text }}" },
+            { "name": "has_audio", "value": "={{ $json.has_audio }}" }
+          ]
+        },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "v-archive-interaction",
+      "name": "Archive Interaction (QA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, -100],
+      "notes": "Best-effort, runs in parallel with (not before) the response -- a QA-log outage should never delay or block the reply reaching the caller."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { session_id: $json.session_id, transcript: $json.transcript, response_text: $json.response_text, response_audio_base64: $json.response_audio_base64, language: $json.language, has_audio: $json.has_audio } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "v-respond-final",
+      "name": "Respond Final Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2200, -220]
+    }
+  ],
+  "connections": {
+    "Voice Intake Webhook": { "main": [[{ "node": "Validate Audio Payload", "type": "main", "index": 0 }]] },
+    "Validate Audio Payload": { "main": [[{ "node": "Payload Valid?", "type": "main", "index": 0 }]] },
+    "Payload Valid?": {
+      "main": [
+        [{ "node": "Has Session ID?", "type": "main", "index": 0 }],
+        [{ "node": "Respond 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has Session ID?": {
+      "main": [
+        [
+          { "node": "Fetch Existing Session", "type": "main", "index": 0 },
+          { "node": "Merge Session + Payload", "type": "main", "index": 1 }
+        ],
+        [{ "node": "Start New Session", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Existing Session": { "main": [[{ "node": "Merge Session + Payload", "type": "main", "index": 0 }]] },
+    "Merge Session + Payload": { "main": [[{ "node": "Session Still Valid?", "type": "main", "index": 0 }]] },
+    "Session Still Valid?": {
+      "main": [
+        [{ "node": "Use Existing Session", "type": "main", "index": 0 }],
+        [{ "node": "Start New Session", "type": "main", "index": 0 }]
+      ]
+    },
+    "Use Existing Session": { "main": [[{ "node": "Attach Audio Binary", "type": "main", "index": 0 }]] },
+    "Start New Session": { "main": [[{ "node": "Attach Audio Binary", "type": "main", "index": 0 }]] },
+    "Attach Audio Binary": {
+      "main": [
+        [
+          { "node": "Transcribe (Whisper STT)", "type": "main", "index": 0 },
+          { "node": "Merge Transcript + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Transcribe (Whisper STT)": { "main": [[{ "node": "Merge Transcript + State", "type": "main", "index": 0 }]] },
+    "Merge Transcript + State": { "main": [[{ "node": "Transcription OK?", "type": "main", "index": 0 }]] },
+    "Transcription OK?": {
+      "main": [
+        [{ "node": "Assess Transcript Quality", "type": "main", "index": 0 }],
+        [{ "node": "Build STT-Failure Fallback", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build STT-Failure Fallback": { "main": [[{ "node": "Truncate For TTS Limit", "type": "main", "index": 0 }]] },
+    "Assess Transcript Quality": { "main": [[{ "node": "Silent or Low Confidence?", "type": "main", "index": 0 }]] },
+    "Silent or Low Confidence?": {
+      "main": [
+        [{ "node": "Build Clarification Response", "type": "main", "index": 0 }],
+        [{ "node": "Unsupported Language?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Clarification Response": { "main": [[{ "node": "Truncate For TTS Limit", "type": "main", "index": 0 }]] },
+    "Unsupported Language?": {
+      "main": [
+        [{ "node": "Build Language Apology", "type": "main", "index": 0 }],
+        [
+          { "node": "Call Agent", "type": "main", "index": 0 },
+          { "node": "Merge Agent Result + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Build Language Apology": { "main": [[{ "node": "Truncate For TTS Limit", "type": "main", "index": 0 }]] },
+    "Call Agent": { "main": [[{ "node": "Merge Agent Result + State", "type": "main", "index": 0 }]] },
+    "Merge Agent Result + State": { "main": [[{ "node": "Agent Call OK?", "type": "main", "index": 0 }]] },
+    "Agent Call OK?": {
+      "main": [
+        [{ "node": "Extract Agent Response", "type": "main", "index": 0 }],
+        [{ "node": "Build Agent-Failure Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Agent-Failure Response": { "main": [[{ "node": "Truncate For TTS Limit", "type": "main", "index": 0 }]] },
+    "Extract Agent Response": {
+      "main": [
+        [
+          { "node": "Update Session History", "type": "main", "index": 0 },
+          { "node": "Merge Session Update + Response", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Update Session History": { "main": [[{ "node": "Merge Session Update + Response", "type": "main", "index": 0 }]] },
+    "Merge Session Update + Response": { "main": [[{ "node": "Truncate For TTS Limit", "type": "main", "index": 0 }]] },
+    "Truncate For TTS Limit": {
+      "main": [
+        [
+          { "node": "Synthesize Speech (Coqui TTS)", "type": "main", "index": 0 },
+          { "node": "Merge TTS Result + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Synthesize Speech (Coqui TTS)": { "main": [[{ "node": "Merge TTS Result + State", "type": "main", "index": 0 }]] },
+    "Merge TTS Result + State": { "main": [[{ "node": "TTS Synthesis OK?", "type": "main", "index": 0 }]] },
+    "TTS Synthesis OK?": {
+      "main": [
+        [{ "node": "Build Final Response (With Audio)", "type": "main", "index": 0 }],
+        [{ "node": "Build Final Response (Text Only)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Final Response (With Audio)": {
+      "main": [
+        [
+          { "node": "Archive Interaction (QA)", "type": "main", "index": 0 },
+          { "node": "Respond Final Result", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Final Response (Text Only)": {
+      "main": [
+        [
+          { "node": "Archive Interaction (QA)", "type": "main", "index": 0 },
+          { "node": "Respond Final Result", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  }
+}

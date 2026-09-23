@@ -1,0 +1,661 @@
+{
+  "name": "02 - Agentic Support Triage",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "support/triage", "responseMode": "responseNode", "options": {} },
+      "id": "t-trigger",
+      "name": "Triage Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-2400, 0],
+      "webhookId": "support-triage"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate incoming ticket. Edge cases: missing fields, bad email, oversized message.\nconst body = $input.first().json.body || {};\nconst errors = [];\nif (!body.ticket_id || typeof body.ticket_id !== 'string' || body.ticket_id.trim() === '') {\n  errors.push('ticket_id is required');\n}\nif (!body.customer_email || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(body.customer_email)) {\n  errors.push('customer_email must be a valid email address');\n}\nif (!body.message || typeof body.message !== 'string' || body.message.trim() === '') {\n  errors.push('message is required and must be non-empty');\n}\nif (body.message && body.message.length > 10000) {\n  errors.push('message exceeds 10,000 char limit');\n}\nif (errors.length) return [{ json: { valid: false, errors } }];\nreturn [{ json: {\n  valid: true,\n  ticket_id: body.ticket_id.trim(),\n  customer_email: body.customer_email.trim(),\n  subject: (body.subject || '(no subject)').toString().slice(0, 300),\n  message: body.message.trim(),\n  channel: body.channel || 'email'\n} }];"
+      },
+      "id": "t-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2200, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "t-if-valid",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-2000, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"validation_failed\", \"details\": $json.errors } }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "t-respond-invalid",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-1800, 180]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.IDEMPOTENCY_API_URL }}/check/{{ $json.ticket_id }}",
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-idem-check",
+      "name": "Check Idempotency",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1800, -80],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "Webhook retries (from the caller's platform) are a common real-world edge case. This checks whether ticket_id was already handled before re-running classification and tool calls."
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-idem",
+      "name": "Merge Idempotency + Ticket",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-1600, -40],
+      "notes": "Recombines the idempotency-check response with the original ticket fields, since the HTTP call replaced $json."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.exists }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "t-if-already",
+      "name": "Already Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1400, -40]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.result }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "t-respond-cached",
+      "name": "Respond Cached Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-1200, -180]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_API_URL }}/v1/chat/completions",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "={{ $env.CHAT_MODEL || 'local-model' }}" },
+            { "name": "messages", "value": "={{ [ { role: 'system', content: 'You are a support ticket classifier. Respond with ONLY a JSON object: {\"category\": string, \"urgency\": \"low\"|\"medium\"|\"high\", \"confidence\": number between 0 and 1, \"sensitive\": boolean (true for legal threats, abuse, fraud, or data-privacy requests)}. No prose, no markdown fences.' }, { role: 'user', content: `Subject: ${$json.subject}\\nMessage: ${$json.message}` } ] }}" },
+            { "name": "temperature", "value": "0.1" }
+          ]
+        },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-classify",
+      "name": "Classify Ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1200, -80],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-classify",
+      "name": "Merge Classification + Ticket",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-1000, -40],
+      "notes": "Recombines the LLM classification response with the original ticket fields lost when the HTTP node replaced $json."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Robustly parse the classifier's JSON. Fail-safe: unparseable or missing confidence -> treat as low-confidence + sensitive so it escalates rather than being silently mishandled.\nfunction safeParseJSON(raw) {\n  if (!raw || typeof raw !== 'string') return null;\n  let text = raw.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  if (m) { try { return JSON.parse(m[0]); } catch (e) {} }\n  return null;\n}\n\nconst t = $json;\nconst raw = t.choices?.[0]?.message?.content;\nconst parsed = safeParseJSON(raw);\n\nconst base = { ticket_id: t.ticket_id, customer_email: t.customer_email, subject: t.subject, message: t.message, channel: t.channel };\n\nif (!parsed || typeof parsed.confidence !== 'number') {\n  return [{ json: { ...base, category: 'unknown', urgency: 'medium', confidence: 0, sensitive: true, classification_parse_error: true } }];\n}\n\nreturn [{ json: {\n  ...base,\n  category: parsed.category || 'general',\n  urgency: ['low', 'medium', 'high'].includes(parsed.urgency) ? parsed.urgency : 'medium',\n  confidence: Math.max(0, Math.min(1, parsed.confidence)),\n  sensitive: !!parsed.sensitive\n} }];"
+      },
+      "id": "t-parse-classify",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-800, -40]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.sensitive }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } },
+            { "leftValue": "={{ $json.confidence }}", "rightValue": 0.5, "operator": { "type": "number", "operation": "lt" } }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "t-if-escalate-early",
+      "name": "Needs Immediate Escalation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-600, -40]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst reasons = [];\nif (t.sensitive) reasons.push('flagged sensitive (legal/abuse/fraud/privacy)');\nif (t.confidence < 0.5) reasons.push(`low classification confidence (${t.confidence})`);\nreturn [{ json: {\n  ticket_id: t.ticket_id, customer_email: t.customer_email, subject: t.subject, message: t.message,\n  category: t.category, urgency: t.urgency, scratchpad: [],\n  reason: reasons.join('; ') || 'flagged for human review',\n  escalation_stage: 'pre_agent'\n} }];"
+      },
+      "id": "t-prep-escalate-early",
+      "name": "Prepare Escalation (Low Confidence/Sensitive)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: {\n  ticket_id: t.ticket_id, customer_email: t.customer_email, subject: t.subject, message: t.message,\n  category: t.category, urgency: t.urgency, scratchpad: [], iteration: 0, max_iterations: 5\n} }];"
+      },
+      "id": "t-init-state",
+      "name": "Init ReAct State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst toolsDoc = `Available tools:\\n- order_lookup(order_id): returns order status, shipping info\\n- kb_search(query): returns matching help-center articles\\n- refund_check(order_id): returns refund eligibility and amount\\n\\nRespond with ONLY a JSON object, no prose, no markdown fences, matching exactly one of:\\n{\"thought\": string, \"action\": \"tool_call\", \"tool_name\": \"order_lookup\"|\"kb_search\"|\"refund_check\", \"tool_input\": object}\\nor\\n{\"thought\": string, \"action\": \"final_answer\", \"answer\": string}`;\n\nconst transcript = (t.scratchpad || []).map((s, i) => `Step ${i + 1}: called ${s.tool_name}(${JSON.stringify(s.tool_input)}) -> ${JSON.stringify(s.observation)}`).join('\\n') || '(no actions taken yet)';\n\nconst prompt = `Customer ticket #${t.ticket_id}\\nSubject: ${t.subject}\\nCategory: ${t.category}, Urgency: ${t.urgency}\\nMessage: ${t.message}\\n\\n${toolsDoc}\\n\\nPrior actions:\\n${transcript}`;\n\nreturn [{ json: { ...t, prompt } }];"
+      },
+      "id": "t-build-prompt",
+      "name": "Build Agent Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-200, -80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_API_URL }}/v1/chat/completions",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "={{ $env.CHAT_MODEL || 'local-model' }}" },
+            { "name": "messages", "value": "={{ [ { role: 'system', content: 'You are a support agent working step by step (ReAct). Always respond with strict JSON only, per the schema given.' }, { role: 'user', content: $json.prompt } ] }}" },
+            { "name": "temperature", "value": "0.1" }
+          ]
+        },
+        "options": { "timeout": 20000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-agent-llm",
+      "name": "Agent Reasoning Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, -140],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-agent",
+      "name": "Merge Agent Response + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [200, -80],
+      "notes": "Recombines the LLM's reasoning output with the ticket/scratchpad/iteration state that the HTTP call would otherwise discard. Same pattern as the embedding merge in workflow 01."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Robustly parse the agent's step output; never trust it blindly.\nfunction safeParseJSON(raw) {\n  if (!raw || typeof raw !== 'string') return null;\n  let text = raw.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  if (m) { try { return JSON.parse(m[0]); } catch (e) {} }\n  return null;\n}\n\nconst t = $json;\nconst raw = t.choices?.[0]?.message?.content;\nconst parsed = safeParseJSON(raw);\n\nconst state = {\n  ticket_id: t.ticket_id, customer_email: t.customer_email, subject: t.subject, message: t.message,\n  category: t.category, urgency: t.urgency, scratchpad: t.scratchpad, iteration: t.iteration, max_iterations: t.max_iterations\n};\n\nif (!parsed || !parsed.action) {\n  return [{ json: { ...state, agent_action: 'parse_error', agent_error: 'unparseable_or_missing_action' } }];\n}\n\nif (parsed.action === 'final_answer') {\n  if (!parsed.answer || typeof parsed.answer !== 'string') {\n    return [{ json: { ...state, agent_action: 'parse_error', agent_error: 'final_answer_missing_text' } }];\n  }\n  return [{ json: { ...state, agent_action: 'final_answer', answer: parsed.answer } }];\n}\n\nif (parsed.action === 'tool_call') {\n  const allowed = ['order_lookup', 'kb_search', 'refund_check'];\n  const toolName = allowed.includes(parsed.tool_name) ? parsed.tool_name : 'unknown';\n  return [{ json: { ...state, agent_action: 'tool_call', tool_name: toolName, tool_input: parsed.tool_input || {} } }];\n}\n\nreturn [{ json: { ...state, agent_action: 'parse_error', agent_error: 'unrecognized_action_value' } }];"
+      },
+      "id": "t-parse-agent",
+      "name": "Parse Agent Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, -80]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            { "outputKey": "final_answer", "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.agent_action }}", "rightValue": "final_answer", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } },
+            { "outputKey": "tool_call", "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.agent_action }}", "rightValue": "tool_call", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "t-router",
+      "name": "Agent Response Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [600, -80],
+      "notes": "Output 0 = final_answer, 1 = tool_call, 2 (fallback) = parse_error/unrecognized action."
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            { "outputKey": "order_lookup", "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.tool_name }}", "rightValue": "order_lookup", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } },
+            { "outputKey": "kb_search", "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.tool_name }}", "rightValue": "kb_search", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } },
+            { "outputKey": "refund_check", "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.tool_name }}", "rightValue": "refund_check", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" } }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "t-route-tool",
+      "name": "Route Tool",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [800, 60],
+      "notes": "Output 0 = order_lookup, 1 = kb_search, 2 = refund_check, 3 (fallback) = unknown tool name the model hallucinated."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.ORDER_API_URL }}/orders/{{ $json.tool_input.order_id }}",
+        "options": { "timeout": 10000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-http-order",
+      "name": "Order Lookup API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, -60],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "If tool_input.order_id is missing/invalid, the API's error response becomes the observation the agent sees next iteration -- it can then ask the customer or retry, which is the intended ReAct self-correction behavior rather than a special case here."
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-order",
+      "name": "Merge Order Result + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1200, -60]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.KB_API_URL }}/search",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "query", "value": "={{ $json.tool_input.query }}" }] },
+        "options": { "timeout": 10000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-http-kb",
+      "name": "KB Search API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 60],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-kb",
+      "name": "Merge KB Result + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1200, 60]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.REFUND_API_URL }}/refund-eligibility/{{ $json.tool_input.order_id }}",
+        "options": { "timeout": 10000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-http-refund",
+      "name": "Refund Check API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 180],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-refund",
+      "name": "Merge Refund Result + State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1200, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$json, observation: { error: `Tool \"${$json.tool_name}\" is not available. Valid tools: order_lookup, kb_search, refund_check.` } } }];"
+      },
+      "id": "t-unknown-tool",
+      "name": "Unknown Tool Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300],
+      "notes": "Handles a hallucinated tool name. No HTTP call needed, so no merge required -- $json already carries the full state."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$json, tool_name: 'agent_parse', tool_input: {}, observation: { error: $json.agent_error || 'unparseable_agent_response' } } }];"
+      },
+      "id": "t-parse-error-obs",
+      "name": "Build Parse Error Observation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Append this step's observation to the scratchpad and advance the iteration counter.\nconst t = $json;\nconst observation = t.observation !== undefined ? t.observation : t.error ? { error: t.error } : (t.body ?? t.result ?? t);\nlet obsForLog = observation;\ntry {\n  const str = JSON.stringify(obsForLog);\n  if (str.length > 2000) obsForLog = { truncated: true, preview: str.slice(0, 2000) };\n} catch (e) {\n  obsForLog = { error: 'unserializable_observation' };\n}\n\nconst scratchpad = [...(t.scratchpad || []), { tool_name: t.tool_name, tool_input: t.tool_input, observation: obsForLog }];\n\nreturn [{ json: {\n  ticket_id: t.ticket_id, customer_email: t.customer_email, subject: t.subject, message: t.message,\n  category: t.category, urgency: t.urgency, scratchpad, iteration: (t.iteration || 0) + 1, max_iterations: t.max_iterations\n} }];"
+      },
+      "id": "t-append-obs",
+      "name": "Append Observation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 60]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.iteration }}", "rightValue": "={{ $json.max_iterations }}", "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "t-if-maxiter",
+      "name": "Iteration < Max?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1600, 60],
+      "notes": "Bounds the ReAct loop at max_iterations (5) so a confused agent can't loop forever burning API calls."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: {\n  ticket_id: t.ticket_id, customer_email: t.customer_email, subject: t.subject, message: t.message,\n  category: t.category, urgency: t.urgency, scratchpad: t.scratchpad,\n  reason: `agent exceeded max iterations (${t.max_iterations}) without reaching a final answer`,\n  escalation_stage: 'agent_loop'\n} }];"
+      },
+      "id": "t-prep-escalate-maxiter",
+      "name": "Prepare Escalation (Max Iterations)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_API_URL }}/tickets",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "ticket_id", "value": "={{ $json.ticket_id }}" },
+            { "name": "customer_email", "value": "={{ $json.customer_email }}" },
+            { "name": "subject", "value": "={{ $json.subject }}" },
+            { "name": "priority", "value": "={{ $json.urgency }}" },
+            { "name": "tag", "value": "needs_human" },
+            { "name": "description", "value": "={{ $json.message + '\\n\\nEscalation reason: ' + $json.reason + '\\n\\nAgent trail: ' + JSON.stringify($json.scratchpad || []) }}" }
+          ]
+        },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-escalate-helpdesk",
+      "name": "Create Helpdesk Ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-200, 140],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-helpdesk",
+      "name": "Merge Helpdesk Result + Reason",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [0, 140],
+      "notes": "Keeps ticket_id/reason alongside the helpdesk API's response (including its status) for the Slack notification and final webhook response."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "text", "value": "={{ 'Ticket ' + $json.ticket_id + ' escalated (' + $json.escalation_stage + '): ' + $json.reason + ($json.statusCode >= 400 ? ' [helpdesk ticket creation FAILED - status ' + $json.statusCode + ']' : '') }}" }
+          ]
+        },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-escalate-slack",
+      "name": "Notify Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [200, 140],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "Best-effort notification. Slack being down should never block the customer-facing escalation response, so this stays neverError with no downstream failure branch."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.IDEMPOTENCY_API_URL }}/mark",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "ticket_id", "value": "={{ $json.ticket_id }}" },
+            { "name": "result", "value": "={{ { status: 'escalated', ticket_id: $json.ticket_id, reason: $json.reason } }}" }
+          ]
+        },
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-escalate-mark-processed",
+      "name": "Mark Processed (Escalated)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 140],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'escalated', ticket_id: $json.ticket_id, reason: $json.reason } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "t-respond-escalated",
+      "name": "Respond 200 Escalated",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [600, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMAIL_API_URL }}/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "to", "value": "={{ $json.customer_email }}" },
+            { "name": "subject", "value": "={{ 'Re: ' + $json.subject }}" },
+            { "name": "body", "value": "={{ $json.answer }}" }
+          ]
+        },
+        "options": { "timeout": 10000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-send-reply",
+      "name": "Send Customer Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, -260],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "Best-effort duplicate channel. The webhook caller already receives the answer in the response body regardless of whether this send succeeds -- a design choice, not a gap, since the caller (helpdesk UI/channel adapter) owns actual delivery."
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "t-merge-sendreply",
+      "name": "Merge Send Result + Answer",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1000, -260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.IDEMPOTENCY_API_URL }}/mark",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "ticket_id", "value": "={{ $json.ticket_id }}" },
+            { "name": "result", "value": "={{ { status: 'resolved', ticket_id: $json.ticket_id, answer: $json.answer } }}" }
+          ]
+        },
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "t-final-mark-processed",
+      "name": "Mark Processed (Resolved)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, -260],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'resolved', ticket_id: $json.ticket_id, answer: $json.answer, tool_calls: $json.scratchpad } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "t-respond-final",
+      "name": "Respond 200 Resolved",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1400, -260]
+    }
+  ],
+  "connections": {
+    "Triage Webhook": { "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]] },
+    "Validate Input": { "main": [[{ "node": "Input Valid?", "type": "main", "index": 0 }]] },
+    "Input Valid?": {
+      "main": [
+        [
+          { "node": "Check Idempotency", "type": "main", "index": 0 },
+          { "node": "Merge Idempotency + Ticket", "type": "main", "index": 1 }
+        ],
+        [{ "node": "Respond 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Idempotency": { "main": [[{ "node": "Merge Idempotency + Ticket", "type": "main", "index": 0 }]] },
+    "Merge Idempotency + Ticket": { "main": [[{ "node": "Already Processed?", "type": "main", "index": 0 }]] },
+    "Already Processed?": {
+      "main": [
+        [{ "node": "Respond Cached Result", "type": "main", "index": 0 }],
+        [
+          { "node": "Classify Ticket", "type": "main", "index": 0 },
+          { "node": "Merge Classification + Ticket", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Classify Ticket": { "main": [[{ "node": "Merge Classification + Ticket", "type": "main", "index": 0 }]] },
+    "Merge Classification + Ticket": { "main": [[{ "node": "Parse Classification", "type": "main", "index": 0 }]] },
+    "Parse Classification": { "main": [[{ "node": "Needs Immediate Escalation?", "type": "main", "index": 0 }]] },
+    "Needs Immediate Escalation?": {
+      "main": [
+        [{ "node": "Prepare Escalation (Low Confidence/Sensitive)", "type": "main", "index": 0 }],
+        [{ "node": "Init ReAct State", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Escalation (Low Confidence/Sensitive)": {
+      "main": [
+        [
+          { "node": "Create Helpdesk Ticket", "type": "main", "index": 0 },
+          { "node": "Merge Helpdesk Result + Reason", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Init ReAct State": { "main": [[{ "node": "Build Agent Prompt", "type": "main", "index": 0 }]] },
+    "Build Agent Prompt": {
+      "main": [
+        [
+          { "node": "Agent Reasoning Step", "type": "main", "index": 0 },
+          { "node": "Merge Agent Response + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Agent Reasoning Step": { "main": [[{ "node": "Merge Agent Response + State", "type": "main", "index": 0 }]] },
+    "Merge Agent Response + State": { "main": [[{ "node": "Parse Agent Response", "type": "main", "index": 0 }]] },
+    "Parse Agent Response": {
+      "main": [
+        [{ "node": "Agent Response Router", "type": "main", "index": 0 }],
+        [
+          { "node": "Merge Order Result + State", "type": "main", "index": 1 },
+          { "node": "Merge KB Result + State", "type": "main", "index": 1 },
+          { "node": "Merge Refund Result + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Agent Response Router": {
+      "main": [
+        [{ "node": "Send Customer Reply", "type": "main", "index": 0 }, { "node": "Merge Send Result + Answer", "type": "main", "index": 1 }],
+        [{ "node": "Route Tool", "type": "main", "index": 0 }],
+        [{ "node": "Build Parse Error Observation", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route Tool": {
+      "main": [
+        [{ "node": "Order Lookup API", "type": "main", "index": 0 }],
+        [{ "node": "KB Search API", "type": "main", "index": 0 }],
+        [{ "node": "Refund Check API", "type": "main", "index": 0 }],
+        [{ "node": "Unknown Tool Handler", "type": "main", "index": 0 }]
+      ]
+    },
+    "Order Lookup API": { "main": [[{ "node": "Merge Order Result + State", "type": "main", "index": 0 }]] },
+    "Merge Order Result + State": { "main": [[{ "node": "Append Observation", "type": "main", "index": 0 }]] },
+    "KB Search API": { "main": [[{ "node": "Merge KB Result + State", "type": "main", "index": 0 }]] },
+    "Merge KB Result + State": { "main": [[{ "node": "Append Observation", "type": "main", "index": 0 }]] },
+    "Refund Check API": { "main": [[{ "node": "Merge Refund Result + State", "type": "main", "index": 0 }]] },
+    "Merge Refund Result + State": { "main": [[{ "node": "Append Observation", "type": "main", "index": 0 }]] },
+    "Unknown Tool Handler": { "main": [[{ "node": "Append Observation", "type": "main", "index": 0 }]] },
+    "Build Parse Error Observation": { "main": [[{ "node": "Append Observation", "type": "main", "index": 0 }]] },
+    "Append Observation": { "main": [[{ "node": "Iteration < Max?", "type": "main", "index": 0 }]] },
+    "Iteration < Max?": {
+      "main": [
+        [{ "node": "Build Agent Prompt", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Escalation (Max Iterations)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Escalation (Max Iterations)": {
+      "main": [
+        [
+          { "node": "Create Helpdesk Ticket", "type": "main", "index": 0 },
+          { "node": "Merge Helpdesk Result + Reason", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Create Helpdesk Ticket": { "main": [[{ "node": "Merge Helpdesk Result + Reason", "type": "main", "index": 0 }]] },
+    "Merge Helpdesk Result + Reason": { "main": [[{ "node": "Notify Slack", "type": "main", "index": 0 }]] },
+    "Notify Slack": { "main": [[{ "node": "Mark Processed (Escalated)", "type": "main", "index": 0 }]] },
+    "Mark Processed (Escalated)": { "main": [[{ "node": "Respond 200 Escalated", "type": "main", "index": 0 }]] },
+    "Send Customer Reply": { "main": [[{ "node": "Merge Send Result + Answer", "type": "main", "index": 0 }]] },
+    "Merge Send Result + Answer": { "main": [[{ "node": "Mark Processed (Resolved)", "type": "main", "index": 0 }]] },
+    "Mark Processed (Resolved)": { "main": [[{ "node": "Respond 200 Resolved", "type": "main", "index": 0 }]] }
+  }
+}

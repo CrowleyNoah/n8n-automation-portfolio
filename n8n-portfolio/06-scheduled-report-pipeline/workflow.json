@@ -1,0 +1,777 @@
+{
+  "name": "06 - Scheduled Report Pipeline",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{ "field": "weeks", "weeksInterval": 1, "triggerAtDay": [1], "triggerAtHour": 8 }] } },
+      "id": "r-schedule-trigger",
+      "name": "Weekly Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-3000, -100],
+      "notes": "rule.interval with field:'weeks' -- fires once at the start of every week; the workflow itself computes the previous Mon-Sun period to report on."
+    },
+    {
+      "parameters": { "httpMethod": "POST", "path": "reports/generate", "responseMode": "responseNode", "options": {} },
+      "id": "r-manual-trigger",
+      "name": "Manual/Backfill Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-3000, 200],
+      "webhookId": "reports-generate",
+      "notes": "Lets ops trigger an on-demand run or backfill a past period, e.g. after fixing a data source outage, with force:true to override the already-sent guard."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compute the previous full calendar week (Mon-Sun, UTC) relative to now.\nconst now = new Date();\nconst dayOfWeek = now.getUTCDay();\nconst daysSinceMonday = (dayOfWeek + 6) % 7;\nconst thisMonday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSinceMonday));\nconst lastMonday = new Date(thisMonday); lastMonday.setUTCDate(thisMonday.getUTCDate() - 7);\nconst lastSunday = new Date(thisMonday); lastSunday.setUTCDate(thisMonday.getUTCDate() - 1);\n\nconst period_start = lastMonday.toISOString().slice(0, 10);\nconst period_end = lastSunday.toISOString().slice(0, 10);\n\nreturn [{ json: { triggered_by: 'schedule', force: false, period_start, period_end, run_id: `weekly-${period_start}` } }];"
+      },
+      "id": "r-normalize-schedule",
+      "name": "Compute Period (Schedule)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2800, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst errors = [];\nif (!body.period_start || !/^\\d{4}-\\d{2}-\\d{2}$/.test(body.period_start)) errors.push('period_start must be an ISO date (YYYY-MM-DD)');\nif (!body.period_end || !/^\\d{4}-\\d{2}-\\d{2}$/.test(body.period_end)) errors.push('period_end must be an ISO date (YYYY-MM-DD)');\nif (body.period_start && body.period_end && body.period_start > body.period_end) errors.push('period_start must be before period_end');\n\nif (errors.length) return [{ json: { valid: false, errors } }];\nreturn [{ json: { valid: true, triggered_by: 'manual', force: !!body.force, period_start: body.period_start, period_end: body.period_end, run_id: `weekly-${body.period_start}` } }];"
+      },
+      "id": "r-normalize-manual",
+      "name": "Validate Period (Manual)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2800, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-manual-valid",
+      "name": "Manual Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-2600, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"validation_failed\", \"details\": $json.errors } }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "r-respond-400-manual",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-2400, 340]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.REPORT_STORE_API_URL }}/reports/{{ $json.run_id }}",
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "r-idem-check",
+      "name": "Check If Already Generated",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-2200, 0],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "r-merge-idem",
+      "name": "Merge Idempotency + Period",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-2000, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.exists }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } },
+            { "leftValue": "={{ $json.record.status }}", "rightValue": "sent", "operator": { "type": "string", "operation": "equals" } },
+            { "leftValue": "={{ $json.force }}", "rightValue": false, "operator": { "type": "boolean", "operation": "false" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-already-sent",
+      "name": "Already Sent For This Period?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1800, 0],
+      "notes": "force:true (from the manual/backfill trigger) bypasses this guard -- e.g. re-sending after a fixed data outage."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.triggered_by }}", "rightValue": "manual", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-manual-1",
+      "name": "Was This Manually Triggered? (skip)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1600, 200],
+      "notes": "The schedule trigger has no caller to respond to; only the manual/webhook path sends an HTTP response. This check gates every termination point in the workflow."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"skipped_already_sent\", \"run_id\": $json.run_id } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "r-respond-skip",
+      "name": "Respond Skipped",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-1400, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { note: 'scheduled run ending quietly - no webhook caller to respond to', run_id: $json.run_id } }];"
+      },
+      "id": "r-log-noop",
+      "name": "Log No-Op (scheduled run)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1400, 420],
+      "notes": "Shared dead-end for every termination point when triggered_by !== 'manual'."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SALES_API_URL }}/summary?start={{ $json.period_start }}&end={{ $json.period_end }}",
+        "options": { "timeout": 20000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "r-fetch-sales",
+      "name": "Fetch Sales Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1600, -140],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPPORT_API_URL }}/summary?start={{ $json.period_start }}&end={{ $json.period_end }}",
+        "options": { "timeout": 20000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "r-fetch-support",
+      "name": "Fetch Support Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1600, -280],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.INFRA_API_URL }}/summary?start={{ $json.period_start }}&end={{ $json.period_end }}",
+        "options": { "timeout": 20000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "r-fetch-infra",
+      "name": "Fetch Infra Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1600, -420],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { sales: { available: t.statusCode < 400, statusCode: t.statusCode, data: t.statusCode < 400 ? t.body : null } } }];"
+      },
+      "id": "r-wrap-sales",
+      "name": "Namespace Sales Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1400, -140],
+      "notes": "Namespacing under a unique key ('sales') before merging siblings together is deliberate -- combining three raw HTTP responses that all have a top-level 'statusCode' field would let each merge silently overwrite the last one's status."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { support: { available: t.statusCode < 400, statusCode: t.statusCode, data: t.statusCode < 400 ? t.body : null } } }];"
+      },
+      "id": "r-wrap-support",
+      "name": "Namespace Support Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1400, -280]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { infra: { available: t.statusCode < 400, statusCode: t.statusCode, data: t.statusCode < 400 ? t.body : null } } }];"
+      },
+      "id": "r-wrap-infra",
+      "name": "Namespace Infra Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1400, -420]
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "r-merge-1",
+      "name": "Merge Sales + Support",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-1200, -210]
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "r-merge-2",
+      "name": "Merge + Infra",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-1000, -280]
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} },
+      "id": "r-merge-3",
+      "name": "Merge + Period State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-800, -140]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst sections = ['sales', 'support', 'infra'];\nconst available = {};\nlet anyAvailable = false;\nconst missing = [];\nfor (const s of sections) {\n  const ok = t[s] && t[s].available;\n  available[s] = !!ok;\n  if (ok) anyAvailable = true; else missing.push(s);\n}\nreturn [{ json: {\n  period_start: t.period_start, period_end: t.period_end, run_id: t.run_id, triggered_by: t.triggered_by,\n  available, any_available: anyAvailable, missing_sections: missing,\n  data: { sales: t.sales?.data, support: t.support?.data, infra: t.infra?.data }\n} }];"
+      },
+      "id": "r-assess-completeness",
+      "name": "Assess Data Completeness",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, -140]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.any_available }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-any-data",
+      "name": "Any Data Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-400, -140],
+      "notes": "If every source is down, don't send a report that's entirely 'data unavailable' placeholders -- abort and page ops instead."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "text", "value": "={{ 'Report ' + $json.run_id + ' (' + $json.period_start + ' to ' + $json.period_end + '): ALL data sources unavailable -- report NOT generated.' }}" }] },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "r-notify-ops-no-data",
+      "name": "Notify Ops (No Data)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-200, -20]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.triggered_by }}", "rightValue": "manual", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-manual-2",
+      "name": "Was This Manually Triggered? (no-data)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-200, -260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"failed_no_data\", \"run_id\": $json.run_id } }}",
+        "options": { "responseCode": 502 }
+      },
+      "id": "r-respond-no-data",
+      "name": "Respond No Data",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [0, -320]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nfunction section(name, label) {\n  if (!t.available[name]) {\n    return `<h2>${label}</h2><p><em>Data unavailable for this period due to a source outage.</em></p>`;\n  }\n  const d = t.data[name] || {};\n  return `<h2>${label}</h2><pre>${JSON.stringify(d, null, 2)}</pre>`;\n}\nconst html = `<html><body>\n<h1>Weekly Ops Report: ${t.period_start} to ${t.period_end}</h1>\n${t.missing_sections.length ? `<p style=\"color:red\">Note: the following sections are missing due to a source outage: ${t.missing_sections.join(', ')}</p>` : ''}\n${section('sales', 'Sales')}\n${section('support', 'Support')}\n${section('infra', 'Infrastructure')}\n</body></html>`;\n\nreturn [{ json: { html, run_id: t.run_id, period_start: t.period_start, period_end: t.period_end, triggered_by: t.triggered_by, missing_sections: t.missing_sections } }];"
+      },
+      "id": "r-render-html",
+      "name": "Render Report HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-200, -140],
+      "notes": "A missing section is rendered as an explicit visible note, never silently omitted -- a reader must never mistake 'data unavailable' for 'zero activity this week', which is a real and different data point."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GOTENBERG_API_URL }}/forms/chromium/convert/html",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": { "parameters": [{ "name": "files", "value": "={{ $json.html }}", "parameterType": "formBinaryData" }] },
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true, "fullResponse": true, "responseFormat": "file" } } }
+      },
+      "id": "r-generate-pdf",
+      "name": "Generate PDF (Gotenberg)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, -140],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "notes": "responseFormat:'file' is what puts the PDF bytes into $binary instead of $json -- $json on this node's output is mostly just status/headers metadata, same reason every other HTTP call in this portfolio gets merged back with pipeline state afterward."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "r-merge-postpdf", "name": "Merge PDF Result + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [200, -140] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-pdf-ok",
+      "name": "PDF Generated OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [400, -140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "text", "value": "={{ 'Report ' + $json.run_id + ': PDF generation failed after retries (status ' + $json.statusCode + ').' }}" }] },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "r-notify-ops-pdf-failed",
+      "name": "Notify Ops (PDF Failed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.triggered_by }}", "rightValue": "manual", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-manual-3",
+      "name": "Was This Manually Triggered? (pdf-fail)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [600, -260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"failed_pdf_generation\", \"run_id\": $json.run_id } }}",
+        "options": { "responseCode": 502 }
+      },
+      "id": "r-respond-pdf-failed",
+      "name": "Respond PDF Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [800, -320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.REPORT_STORE_API_URL }}/reports",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "run_id", "value": "={{ $json.run_id }}" },
+            { "name": "period_start", "value": "={{ $json.period_start }}" },
+            { "name": "period_end", "value": "={{ $json.period_end }}" },
+            { "name": "missing_sections", "value": "={{ $json.missing_sections }}" },
+            { "name": "file", "value": "={{ $binary.data }}", "parameterType": "formBinaryData" }
+          ]
+        },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "r-archive-report",
+      "name": "Archive PDF to Report Store",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, -420],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Durable copy independent of distribution -- runs in parallel with (not gated by) sending emails, since an archive failure and a delivery failure are unrelated concerns that shouldn't block each other."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "r-merge-archive", "name": "Merge Archive Result + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [800, -420] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-archive-ok",
+      "name": "Archived OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, -420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "text", "value": "={{ 'Report ' + $json.run_id + ' was generated and (likely) sent, but archiving to the report store FAILED (status ' + $json.statusCode + '). Save a copy manually.' }}" }] },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "r-notify-ops-archive-failed",
+      "name": "Notify Ops (Archive Failed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, -360]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.DISTRIBUTION_API_URL }}/subscribers?report=weekly_ops",
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "r-fetch-subscribers",
+      "name": "Fetch Subscriber List",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, -140],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "r-merge-subscribers", "name": "Merge Subscribers + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [800, -140] },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nlet recipients = [];\nif (t.statusCode < 400 && Array.isArray(t.body?.emails) && t.body.emails.length > 0) {\n  recipients = t.body.emails;\n} else {\n  recipients = [$env.FALLBACK_RECIPIENT_EMAIL];\n}\nreturn [{ json: { recipients, run_id: t.run_id, period_start: t.period_start, period_end: t.period_end, triggered_by: t.triggered_by } }];"
+      },
+      "id": "r-resolve-recipients",
+      "name": "Resolve Recipients (with Fallback)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, -140],
+      "notes": "A failed or empty subscriber list falls back to a known ops address rather than the report silently going to nobody."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst item = $input.first();\nreturn (t.recipients || []).map(email => ({\n  json: { email, run_id: t.run_id, period_start: t.period_start, period_end: t.period_end, triggered_by: t.triggered_by },\n  binary: item.binary\n}));"
+      },
+      "id": "r-split-recipients",
+      "name": "Split Into Per-Recipient Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, -140],
+      "notes": "Binary data (the PDF) doesn't automatically follow a Code node's fan-out -- it has to be explicitly copied onto each output item."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOTIFY_API_URL }}/send-with-attachment",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "to", "value": "={{ $json.email }}" },
+            { "name": "subject", "value": "={{ 'Weekly Ops Report ' + $json.period_start + ' - ' + $json.period_end }}" },
+            { "name": "attachment", "value": "={{ $binary.data }}", "parameterType": "formBinaryData" }
+          ]
+        },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "r-send-email",
+      "name": "Send Report Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, -140],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "One bad recipient (bounced address, mailbox full) must not stop the others -- each recipient is processed as an isolated item, same isolation principle as workflow 03's per-record ETL processing."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "r-merge-send", "name": "Merge Send Result + Recipient", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [1600, -140] },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { email: t.email, status: t.statusCode < 400 ? 'sent' : 'failed', run_id: t.run_id, triggered_by: t.triggered_by } }];"
+      },
+      "id": "r-build-send-outcome",
+      "name": "Build Send Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, -140]
+    },
+    { "parameters": { "aggregate": "aggregateAllItemData", "destinationFieldName": "results", "options": {} }, "id": "r-aggregate-send-outcomes", "name": "Aggregate Send Outcomes", "type": "n8n-nodes-base.aggregate", "typeVersion": 1, "position": [2000, -140] },
+    {
+      "parameters": {
+        "jsCode": "const items = $json.results || [];\nconst failed = items.filter(r => r.status === 'failed').map(r => r.email);\nreturn [{ json: {\n  run_id: items[0]?.run_id, triggered_by: items[0]?.triggered_by,\n  total: items.length, sent: items.length - failed.length, failed_count: failed.length, failed_recipients: failed\n} }];"
+      },
+      "id": "r-summarize-distribution",
+      "name": "Summarize Distribution",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, -140]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.failed_count }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-any-send-failed",
+      "name": "Any Deliveries Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2400, -140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "text", "value": "={{ 'Report ' + $json.run_id + ': ' + $json.failed_count + '/' + $json.total + ' deliveries failed -- ' + $json.failed_recipients.join(', ') }}" }] },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "r-notify-ops-partial-delivery",
+      "name": "Notify Ops (Partial Delivery)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2600, -260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: {\n  run_id: t.run_id, triggered_by: t.triggered_by,\n  status: t.failed_count > 0 ? 'partial_failure' : 'sent',\n  sent_at: new Date().toISOString(), total: t.total, failed_count: t.failed_count, failed_recipients: t.failed_recipients\n} }];"
+      },
+      "id": "r-build-final-status",
+      "name": "Build Final Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2600, -20],
+      "notes": "Fed from both branches of Any Deliveries Failed? -- a partial failure is still a distinct, recorded outcome, not folded into a plain success."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.REPORT_STORE_API_URL }}/reports/{{ $json.run_id }}/status",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "status", "value": "={{ $json.status }}" },
+            { "name": "sent_at", "value": "={{ $json.sent_at }}" },
+            { "name": "total", "value": "={{ $json.total }}" },
+            { "name": "failed_count", "value": "={{ $json.failed_count }}" },
+            { "name": "failed_recipients", "value": "={{ $json.failed_recipients }}" }
+          ]
+        },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "r-mark-sent",
+      "name": "Record Final Report Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2800, -20],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "r-merge-mark-sent", "name": "Merge Status Result + Outcome", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [3000, -20] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.triggered_by }}", "rightValue": "manual", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "r-if-manual-final",
+      "name": "Was This Manually Triggered? (final)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3200, -20]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": $json.status, \"run_id\": $json.run_id, \"total\": $json.total, \"failed_count\": $json.failed_count } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "r-respond-final",
+      "name": "Respond Final Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3400, -80]
+    }
+  ],
+  "connections": {
+    "Weekly Schedule Trigger": { "main": [[{ "node": "Compute Period (Schedule)", "type": "main", "index": 0 }]] },
+    "Manual/Backfill Webhook": { "main": [[{ "node": "Validate Period (Manual)", "type": "main", "index": 0 }]] },
+    "Validate Period (Manual)": { "main": [[{ "node": "Manual Request Valid?", "type": "main", "index": 0 }]] },
+    "Manual Request Valid?": {
+      "main": [
+        [
+          { "node": "Check If Already Generated", "type": "main", "index": 0 },
+          { "node": "Merge Idempotency + Period", "type": "main", "index": 1 }
+        ],
+        [{ "node": "Respond 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Compute Period (Schedule)": {
+      "main": [
+        [
+          { "node": "Check If Already Generated", "type": "main", "index": 0 },
+          { "node": "Merge Idempotency + Period", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Check If Already Generated": { "main": [[{ "node": "Merge Idempotency + Period", "type": "main", "index": 0 }]] },
+    "Merge Idempotency + Period": { "main": [[{ "node": "Already Sent For This Period?", "type": "main", "index": 0 }]] },
+    "Already Sent For This Period?": {
+      "main": [
+        [{ "node": "Was This Manually Triggered? (skip)", "type": "main", "index": 0 }],
+        [
+          { "node": "Fetch Sales Summary", "type": "main", "index": 0 },
+          { "node": "Fetch Support Summary", "type": "main", "index": 0 },
+          { "node": "Fetch Infra Summary", "type": "main", "index": 0 },
+          { "node": "Merge + Period State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Was This Manually Triggered? (skip)": {
+      "main": [
+        [{ "node": "Respond Skipped", "type": "main", "index": 0 }],
+        [{ "node": "Log No-Op (scheduled run)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Sales Summary": { "main": [[{ "node": "Namespace Sales Result", "type": "main", "index": 0 }]] },
+    "Fetch Support Summary": { "main": [[{ "node": "Namespace Support Result", "type": "main", "index": 0 }]] },
+    "Fetch Infra Summary": { "main": [[{ "node": "Namespace Infra Result", "type": "main", "index": 0 }]] },
+    "Namespace Sales Result": { "main": [[{ "node": "Merge Sales + Support", "type": "main", "index": 0 }]] },
+    "Namespace Support Result": { "main": [[{ "node": "Merge Sales + Support", "type": "main", "index": 1 }]] },
+    "Merge Sales + Support": { "main": [[{ "node": "Merge + Infra", "type": "main", "index": 0 }]] },
+    "Namespace Infra Result": { "main": [[{ "node": "Merge + Infra", "type": "main", "index": 1 }]] },
+    "Merge + Infra": { "main": [[{ "node": "Merge + Period State", "type": "main", "index": 0 }]] },
+    "Merge + Period State": { "main": [[{ "node": "Assess Data Completeness", "type": "main", "index": 0 }]] },
+    "Assess Data Completeness": { "main": [[{ "node": "Any Data Available?", "type": "main", "index": 0 }]] },
+    "Any Data Available?": {
+      "main": [
+        [{ "node": "Render Report HTML", "type": "main", "index": 0 }],
+        [
+          { "node": "Notify Ops (No Data)", "type": "main", "index": 0 },
+          { "node": "Was This Manually Triggered? (no-data)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Was This Manually Triggered? (no-data)": {
+      "main": [
+        [{ "node": "Respond No Data", "type": "main", "index": 0 }],
+        [{ "node": "Log No-Op (scheduled run)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Render Report HTML": {
+      "main": [
+        [
+          { "node": "Generate PDF (Gotenberg)", "type": "main", "index": 0 },
+          { "node": "Merge PDF Result + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Generate PDF (Gotenberg)": { "main": [[{ "node": "Merge PDF Result + State", "type": "main", "index": 0 }]] },
+    "Merge PDF Result + State": { "main": [[{ "node": "PDF Generated OK?", "type": "main", "index": 0 }]] },
+    "PDF Generated OK?": {
+      "main": [
+        [
+          { "node": "Archive PDF to Report Store", "type": "main", "index": 0 },
+          { "node": "Merge Archive Result + State", "type": "main", "index": 1 },
+          { "node": "Fetch Subscriber List", "type": "main", "index": 0 },
+          { "node": "Merge Subscribers + State", "type": "main", "index": 1 }
+        ],
+        [
+          { "node": "Notify Ops (PDF Failed)", "type": "main", "index": 0 },
+          { "node": "Was This Manually Triggered? (pdf-fail)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Was This Manually Triggered? (pdf-fail)": {
+      "main": [
+        [{ "node": "Respond PDF Failed", "type": "main", "index": 0 }],
+        [{ "node": "Log No-Op (scheduled run)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Archive PDF to Report Store": { "main": [[{ "node": "Merge Archive Result + State", "type": "main", "index": 0 }]] },
+    "Merge Archive Result + State": { "main": [[{ "node": "Archived OK?", "type": "main", "index": 0 }]] },
+    "Archived OK?": {
+      "main": [
+        [],
+        [{ "node": "Notify Ops (Archive Failed)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Subscriber List": { "main": [[{ "node": "Merge Subscribers + State", "type": "main", "index": 0 }]] },
+    "Merge Subscribers + State": { "main": [[{ "node": "Resolve Recipients (with Fallback)", "type": "main", "index": 0 }]] },
+    "Resolve Recipients (with Fallback)": { "main": [[{ "node": "Split Into Per-Recipient Items", "type": "main", "index": 0 }]] },
+    "Split Into Per-Recipient Items": {
+      "main": [
+        [
+          { "node": "Send Report Email", "type": "main", "index": 0 },
+          { "node": "Merge Send Result + Recipient", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Send Report Email": { "main": [[{ "node": "Merge Send Result + Recipient", "type": "main", "index": 0 }]] },
+    "Merge Send Result + Recipient": { "main": [[{ "node": "Build Send Outcome", "type": "main", "index": 0 }]] },
+    "Build Send Outcome": { "main": [[{ "node": "Aggregate Send Outcomes", "type": "main", "index": 0 }]] },
+    "Aggregate Send Outcomes": { "main": [[{ "node": "Summarize Distribution", "type": "main", "index": 0 }]] },
+    "Summarize Distribution": { "main": [[{ "node": "Any Deliveries Failed?", "type": "main", "index": 0 }]] },
+    "Any Deliveries Failed?": {
+      "main": [
+        [{ "node": "Build Final Status", "type": "main", "index": 0 }],
+        [
+          { "node": "Notify Ops (Partial Delivery)", "type": "main", "index": 0 },
+          { "node": "Build Final Status", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Final Status": {
+      "main": [
+        [
+          { "node": "Record Final Report Status", "type": "main", "index": 0 },
+          { "node": "Merge Status Result + Outcome", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Record Final Report Status": { "main": [[{ "node": "Merge Status Result + Outcome", "type": "main", "index": 0 }]] },
+    "Merge Status Result + Outcome": { "main": [[{ "node": "Was This Manually Triggered? (final)", "type": "main", "index": 0 }]] },
+    "Was This Manually Triggered? (final)": {
+      "main": [
+        [{ "node": "Respond Final Result", "type": "main", "index": 0 }],
+        [{ "node": "Log No-Op (scheduled run)", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}

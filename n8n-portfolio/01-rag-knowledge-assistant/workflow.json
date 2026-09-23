@@ -1,0 +1,523 @@
+{
+  "name": "01 - RAG Knowledge Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag/ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ing-trigger",
+      "name": "Ingest Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1600, -300],
+      "webhookId": "rag-ingest"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate ingest payload. Edge cases: missing body, missing both text/source_url, empty doc_id, oversized payload.\nconst body = $input.first().json.body || {};\nconst errors = [];\n\nif (!body.doc_id || typeof body.doc_id !== 'string' || body.doc_id.trim() === '') {\n  errors.push('doc_id is required and must be a non-empty string');\n}\nif (!body.text && !body.source_url) {\n  errors.push('either text or source_url must be provided');\n}\nif (body.text && body.text.length > 500000) {\n  errors.push('text exceeds 500,000 char ingestion limit; split the document client-side');\n}\nif (body.source_url && !/^https?:\\/\\//i.test(body.source_url)) {\n  errors.push('source_url must be a valid http(s) URL');\n}\n\nif (errors.length) {\n  return [{ json: { valid: false, errors, statusCode: 400 } }];\n}\n\nreturn [{ json: { valid: true, doc_id: body.doc_id.trim(), text: body.text || null, source_url: body.source_url || null, metadata: body.metadata || {} } }];"
+      },
+      "id": "ing-validate",
+      "name": "Validate Ingest Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1380, -300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ing-if-valid",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1160, -300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"validation_failed\", \"details\": $json.errors } }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "ing-respond-invalid",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-960, -180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.text }}", "rightValue": null, "operator": { "type": "string", "operation": "empty" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ing-if-needsfetch",
+      "name": "Needs URL Fetch?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-960, -420]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "options": {
+          "timeout": 15000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "ing-fetch-url",
+      "name": "Fetch Source URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-760, -480],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "gte" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ing-if-fetchfailed",
+      "name": "Fetch Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-560, -480]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"source_fetch_failed\", \"status\": $json.statusCode, \"doc_id\": $('Validate Ingest Input').item.json.doc_id } }}",
+        "options": { "responseCode": 502 }
+      },
+      "id": "ing-respond-fetchfail",
+      "name": "Respond 502 Fetch Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-360, -540]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Chunk text with overlap. Edge cases: empty/whitespace-only text after fetch, HTML source (strip tags), tiny docs (<chunkSize).\nlet text = $json.text || $json.data || '';\nif (typeof text !== 'string') text = String(text);\n\n// crude HTML strip if source came from a URL fetch\nif (text.includes('<html') || text.includes('<body')) {\n  text = text.replace(/<script[\\s\\S]*?<\\/script>/gi, '')\n             .replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n             .replace(/<[^>]+>/g, ' ')\n             .replace(/\\s+/g, ' ')\n             .trim();\n}\n\nif (!text || text.trim().length === 0) {\n  return [{ json: { error: 'empty_document', doc_id: $('Validate Ingest Input').item.json.doc_id } }];\n}\n\nconst chunkSize = 1000;\nconst overlap = 150;\nconst chunks = [];\nlet start = 0;\nwhile (start < text.length) {\n  const end = Math.min(start + chunkSize, text.length);\n  chunks.push(text.slice(start, end));\n  if (end === text.length) break;\n  start += (chunkSize - overlap);\n}\n\nconst docId = $('Validate Ingest Input').item.json.doc_id;\nconst metadata = $('Validate Ingest Input').item.json.metadata;\nreturn chunks.map((chunk, i) => ({\n  json: {\n    doc_id: docId,\n    chunk_id: `${docId}::chunk_${i}`,\n    chunk_index: i,\n    total_chunks: chunks.length,\n    text: chunk,\n    metadata\n  }\n}));"
+      },
+      "id": "ing-chunk",
+      "name": "Chunk Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-360, -300]
+    },
+    {
+      "parameters": { "batchSize": 5, "options": {} },
+      "id": "ing-batch",
+      "name": "Batch Chunks (5 at a time)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-160, -300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMBEDDINGS_API_URL }}/embed",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "input", "value": "={{ $json.text }}" },
+            { "name": "model", "value": "={{ $env.EMBEDDING_MODEL || 'nomic-embed-text' }}" }
+          ]
+        },
+        "options": {
+          "timeout": 20000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "ing-embed",
+      "name": "Embed Chunk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [40, -300],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 3000,
+      "notes": "Retries handle transient 429/5xx from embedding backend. waitBetweenTries backs off before each retry."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "ing-merge-chunk-embed",
+      "name": "Merge Chunk + Embedding",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [140, -300],
+      "notes": "Recombines each chunk's original fields (doc_id, chunk_id, text, metadata) with its embedding result by position. Avoids relying on $('Chunk Text').item inside the batch loop, whose pairedItem lineage isn't reliable across HTTP Request nodes mid-loop."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.embedding }}", "rightValue": null, "operator": { "type": "array", "operation": "notEmpty" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ing-if-embedok",
+      "name": "Embedding OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [340, -300]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.VECTOR_DB_URL }}/collections/knowledge_base/points",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "id", "value": "={{ $json.chunk_id }}" },
+            { "name": "vector", "value": "={{ $json.embedding }}" },
+            { "name": "payload", "value": "={{ { text: $json.text, doc_id: $json.doc_id, chunk_index: $json.chunk_index, metadata: $json.metadata } }}" }
+          ]
+        },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "ing-upsert",
+      "name": "Upsert to Vector Store",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [540, -360],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Track embedding failures instead of dropping the chunk silently.\n// chunk_id/doc_id come from the merged item; error/message come from the failed HTTP response, if present.\nreturn [{ json: { chunk_id: $json.chunk_id, doc_id: $json.doc_id, status: 'embedding_failed', error: $json.error || $json.message || 'unknown' } }];"
+      },
+      "id": "ing-log-embedfail",
+      "name": "Log Embedding Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [540, -220]
+    },
+    {
+      "parameters": {},
+      "id": "ing-noop-loopback",
+      "name": "Loop Back",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [740, -300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"ingested\", \"doc_id\": $('Validate Ingest Input').item.json.doc_id, \"chunks\": $('Chunk Text').all().length } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "ing-respond-ok",
+      "name": "Respond 200 Ingested",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [940, -300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"empty_or_unreadable_document\", \"doc_id\": $json.doc_id } }}",
+        "options": { "responseCode": 422 }
+      },
+      "id": "ing-respond-empty",
+      "name": "Respond 422 Empty Doc",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-160, -140]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag/query",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "q-trigger",
+      "name": "Query Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1600, 200],
+      "webhookId": "rag-query"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Edge cases: missing/empty query, oversized query, invalid top_k.\nconst body = $input.first().json.body || {};\nconst errors = [];\nif (!body.query || typeof body.query !== 'string' || body.query.trim() === '') {\n  errors.push('query is required and must be a non-empty string');\n}\nif (body.query && body.query.length > 2000) {\n  errors.push('query exceeds 2000 char limit');\n}\nlet topK = parseInt(body.top_k, 10);\nif (isNaN(topK) || topK < 1) topK = 5;\nif (topK > 20) topK = 20;\n\nif (errors.length) return [{ json: { valid: false, errors } }];\nreturn [{ json: { valid: true, query: body.query.trim(), top_k: topK } }];"
+      },
+      "id": "q-validate",
+      "name": "Validate Query Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1380, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "q-if-valid",
+      "name": "Query Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1160, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"validation_failed\", \"details\": $json.errors } }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "q-respond-invalid",
+      "name": "Respond 400 (query)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-960, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMBEDDINGS_API_URL }}/embed",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "input", "value": "={{ $json.query }}" },
+            { "name": "model", "value": "={{ $env.EMBEDDING_MODEL || 'nomic-embed-text' }}" }
+          ]
+        },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "q-embed",
+      "name": "Embed Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-960, 100],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VECTOR_DB_URL }}/collections/knowledge_base/search",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "vector", "value": "={{ $json.embedding }}" },
+            { "name": "limit", "value": "={{ $('Validate Query Input').item.json.top_k }}" },
+            { "name": "with_payload", "value": "true" }
+          ]
+        },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "q-search",
+      "name": "Vector Similarity Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-760, 100],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.result }}", "rightValue": null, "operator": { "type": "array", "operation": "notEmpty" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "q-if-hasresults",
+      "name": "Any Matches?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-560, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"answer\": \"No relevant documents were found in the knowledge base for this query.\", \"sources\": [] } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "q-respond-noresults",
+      "name": "Respond No Matches",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-360, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build grounded context and enforce a token/char budget so the LLM prompt doesn't blow the context window.\nconst results = $json.result || [];\nconst MAX_CONTEXT_CHARS = 6000;\nlet context = '';\nconst sources = [];\nfor (const r of results) {\n  const snippet = r.payload?.text || '';\n  if ((context + snippet).length > MAX_CONTEXT_CHARS) break;\n  context += `\\n---\\n[source: ${r.payload?.doc_id}]\\n${snippet}`;\n  sources.push({ doc_id: r.payload?.doc_id, score: r.score, chunk_index: r.payload?.chunk_index });\n}\nreturn [{ json: { context, sources, query: $('Validate Query Input').item.json.query } }];"
+      },
+      "id": "q-buildcontext",
+      "name": "Build Grounded Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-360, 40]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_API_URL }}/v1/chat/completions",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "={{ $env.CHAT_MODEL || 'local-model' }}" },
+            { "name": "messages", "value": "={{ [ { role: 'system', content: 'Answer ONLY using the provided context. If the context does not contain the answer, say you do not have enough information. Cite sources by doc_id.' }, { role: 'user', content: `Context:\\n${$json.context}\\n\\nQuestion: ${$json.query}` } ] }}" },
+            { "name": "temperature", "value": "0.2" }
+          ]
+        },
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "q-llm",
+      "name": "Generate Grounded Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-160, 40],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.choices }}", "rightValue": null, "operator": { "type": "array", "operation": "notEmpty" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "q-if-llmok",
+      "name": "LLM Call OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [40, 40]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"answer\": $json.choices[0].message.content, \"sources\": $('Build Grounded Context').item.json.sources } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "q-respond-ok",
+      "name": "Respond 200 With Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [240, -20]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"llm_generation_failed\", \"sources\": $('Build Grounded Context').item.json.sources, \"message\": \"Relevant context was found but the answer could not be generated. Try again shortly.\" } }}",
+        "options": { "responseCode": 503 }
+      },
+      "id": "q-respond-llmfail",
+      "name": "Respond 503 LLM Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [240, 140]
+    }
+  ],
+  "connections": {
+    "Ingest Webhook": { "main": [[{ "node": "Validate Ingest Input", "type": "main", "index": 0 }]] },
+    "Validate Ingest Input": { "main": [[{ "node": "Input Valid?", "type": "main", "index": 0 }]] },
+    "Input Valid?": {
+      "main": [
+        [{ "node": "Needs URL Fetch?", "type": "main", "index": 0 }],
+        [{ "node": "Respond 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Needs URL Fetch?": {
+      "main": [
+        [{ "node": "Fetch Source URL", "type": "main", "index": 0 }],
+        [{ "node": "Chunk Text", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Source URL": { "main": [[{ "node": "Fetch Failed?", "type": "main", "index": 0 }]] },
+    "Fetch Failed?": {
+      "main": [
+        [{ "node": "Respond 502 Fetch Failed", "type": "main", "index": 0 }],
+        [{ "node": "Chunk Text", "type": "main", "index": 0 }]
+      ]
+    },
+    "Chunk Text": { "main": [[{ "node": "Batch Chunks (5 at a time)", "type": "main", "index": 0 }]] },
+    "Batch Chunks (5 at a time)": {
+      "main": [
+        [{ "node": "Respond 200 Ingested", "type": "main", "index": 0 }],
+        [
+          { "node": "Embed Chunk", "type": "main", "index": 0 },
+          { "node": "Merge Chunk + Embedding", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Embed Chunk": { "main": [[{ "node": "Merge Chunk + Embedding", "type": "main", "index": 0 }]] },
+    "Merge Chunk + Embedding": { "main": [[{ "node": "Embedding OK?", "type": "main", "index": 0 }]] },
+    "Embedding OK?": {
+      "main": [
+        [{ "node": "Upsert to Vector Store", "type": "main", "index": 0 }],
+        [{ "node": "Log Embedding Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert to Vector Store": { "main": [[{ "node": "Loop Back", "type": "main", "index": 0 }]] },
+    "Log Embedding Failure": { "main": [[{ "node": "Loop Back", "type": "main", "index": 0 }]] },
+    "Loop Back": { "main": [[{ "node": "Batch Chunks (5 at a time)", "type": "main", "index": 0 }]] },
+    "Query Webhook": { "main": [[{ "node": "Validate Query Input", "type": "main", "index": 0 }]] },
+    "Validate Query Input": { "main": [[{ "node": "Query Valid?", "type": "main", "index": 0 }]] },
+    "Query Valid?": {
+      "main": [
+        [{ "node": "Embed Query", "type": "main", "index": 0 }],
+        [{ "node": "Respond 400 (query)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Embed Query": { "main": [[{ "node": "Vector Similarity Search", "type": "main", "index": 0 }]] },
+    "Vector Similarity Search": { "main": [[{ "node": "Any Matches?", "type": "main", "index": 0 }]] },
+    "Any Matches?": {
+      "main": [
+        [{ "node": "Build Grounded Context", "type": "main", "index": 0 }],
+        [{ "node": "Respond No Matches", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Grounded Context": { "main": [[{ "node": "Generate Grounded Answer", "type": "main", "index": 0 }]] },
+    "Generate Grounded Answer": { "main": [[{ "node": "LLM Call OK?", "type": "main", "index": 0 }]] },
+    "LLM Call OK?": {
+      "main": [
+        [{ "node": "Respond 200 With Answer", "type": "main", "index": 0 }],
+        [{ "node": "Respond 503 LLM Failed", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}

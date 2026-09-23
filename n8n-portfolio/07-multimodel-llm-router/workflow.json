@@ -1,0 +1,824 @@
+{
+  "name": "07 - Multi-Model LLM Router",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "llm/complete", "responseMode": "responseNode", "options": {} },
+      "id": "l-trigger",
+      "name": "Completion Request Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-3400, 0],
+      "webhookId": "llm-complete"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Requires NODE_FUNCTION_ALLOW_BUILTIN to include 'crypto' (same as workflow 04).\nconst crypto = require('crypto');\nconst body = $input.first().json.body || {};\nconst errors = [];\nif (!body.prompt || typeof body.prompt !== 'string' || body.prompt.trim() === '') errors.push('prompt is required');\nif (body.prompt && body.prompt.length > 20000) errors.push('prompt exceeds 20,000 char limit');\n\nconst validTaskTypes = ['simple', 'complex', 'code'];\nconst task_type = validTaskTypes.includes(body.task_type) ? body.task_type : 'simple';\nlet max_tokens = parseInt(body.max_tokens, 10);\nif (isNaN(max_tokens) || max_tokens <= 0) max_tokens = 500;\nif (max_tokens > 4000) max_tokens = 4000;\nconst require_json = !!body.require_json;\n\nif (errors.length) return [{ json: { valid: false, errors } }];\n\nconst request_id = body.request_id || crypto.randomUUID();\nconst cache_key = crypto.createHash('sha256').update(JSON.stringify({ prompt: body.prompt, task_type, max_tokens, require_json })).digest('hex');\n\nreturn [{ json: { valid: true, request_id, prompt: body.prompt, task_type, max_tokens, require_json, cache_key } }];"
+      },
+      "id": "l-validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3200, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-valid",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-3000, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"validation_failed\", \"details\": $json.errors } }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "l-respond-400",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-2800, 180]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CACHE_API_URL }}/lookup/{{ $json.cache_key }}",
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-cache-check",
+      "name": "Check Response Cache",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-2800, -100],
+      "retryOnFail": true,
+      "maxTries": 1,
+      "notes": "Identical prompt+params within the cache TTL skips every provider entirely -- the single biggest cost/latency win available, ahead of any routing logic."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "l-merge-cache", "name": "Merge Cache + Request", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [-2600, -100] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.exists }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-cache-hit",
+      "name": "Cache Hit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-2400, -100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"request_id\": $json.request_id, \"text\": $json.cached_response.text, \"provider\": $json.cached_response.provider, \"cached\": true } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "l-respond-cached",
+      "name": "Respond From Cache",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-2200, -220]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A free local model handles simple and code tasks well; genuine complex reasoning skips straight to a stronger paid tier rather than wasting a guaranteed-weak attempt.\nconst t = $json;\nconst starting_tier = t.task_type === 'complex' ? 2 : 1;\nreturn [{ json: { ...t, starting_tier } }];"
+      },
+      "id": "l-classify-task",
+      "name": "Classify Starting Tier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2200, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CIRCUIT_BREAKER_API_URL }}/status?providers=local_llm,midtier,premium",
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-check-all-breakers",
+      "name": "Check All Provider Breakers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-2000, 0],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "One batched status call for all three providers rather than one round-trip per tier -- fewer calls, and the result is threaded through every subsequent Code node's return object as 'breakers' for the rest of the run."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "l-merge-breakers", "name": "Merge Breakers + Request", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [-1800, 0] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.starting_tier }}", "rightValue": 1, "operator": { "type": "number", "operation": "lte" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-start-tier1",
+      "name": "Start At Tier 1?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1600, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.local_llm.open }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-breaker1-open",
+      "name": "Tier 1 (Local LLM) Breaker Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1400, -80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOCAL_LLM_API_URL }}/api/generate",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "model", "value": "local-model" }, { "name": "prompt", "value": "={{ $json.prompt }}" }, { "name": "stream", "value": "false" }] },
+        "options": { "timeout": 15000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "l-call-local-llm",
+      "name": "Call Local LLM (Tier 1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1200, -160],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "l-merge-local-llm", "name": "Merge Local LLM Result + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [-1000, -160] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-local-llm-ok",
+      "name": "Local LLM Call OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-800, -160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CIRCUIT_BREAKER_API_URL }}/record-failure?provider=local_llm",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "status", "value": "={{ $json.statusCode }}" }] },
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-record-breaker1-fail",
+      "name": "Record Local LLM Breaker Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-600, -260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst text = t.body?.response || '';\nreturn [{ json: { text, provider: 'local_llm', cost_usd: 0, request_id: t.request_id, prompt: t.prompt, task_type: t.task_type, max_tokens: t.max_tokens, require_json: t.require_json, cache_key: t.cache_key, breakers: t.breakers } }];"
+      },
+      "id": "l-extract-local-llm",
+      "name": "Extract Local LLM Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, -60],
+      "notes": "The local model's response shape ({response: string}) differs from the OpenAI-compatible and Anthropic-style shapes used by the other two tiers -- each tier gets its own extraction step rather than one shared parser."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nlet valid = typeof t.text === 'string' && t.text.trim().length > 0;\nlet format_error = null;\nif (valid && t.require_json) {\n  try { JSON.parse(t.text); } catch (e) { valid = false; format_error = 'response is not valid JSON as required'; }\n}\nreturn [{ json: { ...t, quality_ok: valid, format_error } }];"
+      },
+      "id": "l-validate-quality-1",
+      "name": "Validate Quality (Tier 1)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, -60],
+      "notes": "An empty or malformed response is a soft failure -- escalate to the next tier, but never ding the circuit breaker for it. It's a quality miss, not evidence the provider itself is unhealthy."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.quality_ok }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-quality1-ok",
+      "name": "Tier 1 Quality OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-200, -60]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BUDGET_API_URL }}/status",
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-check-budget-tier2",
+      "name": "Check Budget (Before Tier 2)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, 60],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "Fetched fresh here rather than once at the start of the request -- concurrent requests can drain the budget between an early check and actually spending against it."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "l-merge-budget-tier2", "name": "Merge Budget + State (T2)", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [200, 60] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.remaining_usd }}", "rightValue": 0.01, "operator": { "type": "number", "operation": "gte" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-budget2-ok",
+      "name": "Budget OK For Tier 2?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [400, 60]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.breakers.midtier.open }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-breaker2-open",
+      "name": "Tier 2 (Mid-Tier) Breaker Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [600, 60]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MIDTIER_API_URL }}/v1/chat/completions",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "fast-cloud-model" },
+            { "name": "messages", "value": "={{ [ { role: 'user', content: $json.prompt } ] }}" },
+            { "name": "max_tokens", "value": "={{ $json.max_tokens }}" }
+          ]
+        },
+        "options": { "timeout": 20000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "l-call-midtier",
+      "name": "Call Mid-Tier (Tier 2)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, 0],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "l-merge-midtier", "name": "Merge Mid-Tier Result + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [1000, 0] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-midtier-ok",
+      "name": "Mid-Tier Call OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CIRCUIT_BREAKER_API_URL }}/record-failure?provider=midtier",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "status", "value": "={{ $json.statusCode }}" }] },
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-record-breaker2-fail",
+      "name": "Record Mid-Tier Breaker Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst text = t.body?.choices?.[0]?.message?.content || '';\nconst usage = t.body?.usage;\nconst cost_usd = usage ? (usage.total_tokens || 0) * 0.000002 : 0.002;\nreturn [{ json: { text, provider: 'midtier', cost_usd, request_id: t.request_id, prompt: t.prompt, task_type: t.task_type, max_tokens: t.max_tokens, require_json: t.require_json, cache_key: t.cache_key, breakers: t.breakers } }];"
+      },
+      "id": "l-extract-midtier",
+      "name": "Extract Mid-Tier Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 100],
+      "notes": "OpenAI-compatible shape: choices[0].message.content, with a token-based cost estimate when usage is reported, falling back to a flat estimate when it isn't."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nlet valid = typeof t.text === 'string' && t.text.trim().length > 0;\nlet format_error = null;\nif (valid && t.require_json) {\n  try { JSON.parse(t.text); } catch (e) { valid = false; format_error = 'response is not valid JSON as required'; }\n}\nreturn [{ json: { ...t, quality_ok: valid, format_error } }];"
+      },
+      "id": "l-validate-quality-2",
+      "name": "Validate Quality (Tier 2)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.quality_ok }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-quality2-ok",
+      "name": "Tier 2 Quality OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1800, 100]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BUDGET_API_URL }}/status",
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-check-budget-tier3",
+      "name": "Check Budget (Before Tier 3)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 220],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "Checked fresh again -- tier 2 may have already spent against the budget this same request."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "l-merge-budget-tier3", "name": "Merge Budget + State (T3)", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [2200, 220] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.remaining_usd }}", "rightValue": 0.05, "operator": { "type": "number", "operation": "gte" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-budget3-ok",
+      "name": "Budget OK For Tier 3?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2400, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { request_id: t.request_id, reason: 'daily_budget_exhausted', tiers_attempted: ['local_llm', 'midtier', 'premium'] } }];"
+      },
+      "id": "l-fail-budget3",
+      "name": "Build Failure (Budget Exhausted)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2600, 380]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.breakers.premium.open }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-breaker3-open",
+      "name": "Tier 3 (Premium) Breaker Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2600, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { request_id: t.request_id, reason: 'premium_circuit_open_no_further_fallback', tiers_attempted: ['local_llm', 'midtier', 'premium'] } }];"
+      },
+      "id": "l-fail-breaker3",
+      "name": "Build Failure (Premium Breaker Open)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2800, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.PREMIUM_API_URL }}/v1/messages",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "model", "value": "premium-model" },
+            { "name": "max_tokens", "value": "={{ $json.max_tokens }}" },
+            { "name": "messages", "value": "={{ [ { role: 'user', content: $json.prompt } ] }}" }
+          ]
+        },
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "l-call-premium",
+      "name": "Call Premium (Tier 3)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2800, 60],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Last-resort tier -- no further fallback below this. A failure here means the entire request fails."
+    },
+    { "parameters": { "mode": "combine", "combineBy": "combineByPosition", "options": {} }, "id": "l-merge-premium", "name": "Merge Premium Result + State", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [3000, 60] },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.statusCode }}", "rightValue": 400, "operator": { "type": "number", "operation": "lt" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-premium-ok",
+      "name": "Premium Call OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3200, 60]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CIRCUIT_BREAKER_API_URL }}/record-failure?provider=premium",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "status", "value": "={{ $json.statusCode }}" }] },
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-record-breaker3-fail",
+      "name": "Record Premium Breaker Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3400, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { request_id: t.request_id, reason: 'all_providers_failed', tiers_attempted: ['local_llm', 'midtier', 'premium'] } }];"
+      },
+      "id": "l-fail-premium",
+      "name": "Build Failure (All Providers Failed)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3600, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst text = (t.body?.content && t.body.content[0] && t.body.content[0].text) || '';\nconst usage = t.body?.usage;\nconst cost_usd = usage ? ((usage.input_tokens || 0) + (usage.output_tokens || 0)) * 0.000015 : 0.05;\nreturn [{ json: { text, provider: 'premium', cost_usd, request_id: t.request_id, prompt: t.prompt, task_type: t.task_type, max_tokens: t.max_tokens, require_json: t.require_json, cache_key: t.cache_key, breakers: t.breakers } }];"
+      },
+      "id": "l-extract-premium",
+      "name": "Extract Premium Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3400, -60],
+      "notes": "Anthropic-style shape: content[0].text -- the third distinct response format this router normalizes."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nlet valid = typeof t.text === 'string' && t.text.trim().length > 0;\nlet format_error = null;\nif (valid && t.require_json) {\n  try { JSON.parse(t.text); } catch (e) { valid = false; format_error = 'response is not valid JSON as required'; }\n}\nreturn [{ json: { ...t, quality_ok: valid, format_error } }];"
+      },
+      "id": "l-validate-quality-3",
+      "name": "Validate Quality (Tier 3)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3600, -60]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "leftValue": "={{ $json.quality_ok }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "l-if-quality3-ok",
+      "name": "Tier 3 Quality OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3800, -60]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { request_id: t.request_id, reason: 'quality_check_failed_all_tiers', tiers_attempted: ['local_llm', 'midtier', 'premium'] } }];"
+      },
+      "id": "l-fail-quality3",
+      "name": "Build Failure (Quality Failed All Tiers)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4000, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [{ "name": "text", "value": "={{ 'LLM request ' + $json.request_id + ' failed across all provider tiers: ' + $json.reason }}" }] },
+        "options": { "timeout": 8000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-notify-ops-all-failed",
+      "name": "Notify Ops (All Tiers Failed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4200, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"all_providers_unavailable\", \"reason\": $json.reason, \"request_id\": $json.request_id } }}",
+        "options": { "responseCode": 503 }
+      },
+      "id": "l-respond-503",
+      "name": "Respond 503",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4400, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nreturn [{ json: { request_id: t.request_id, text: t.text, provider: t.provider, cost_usd: t.cost_usd, cache_key: t.cache_key, cached: false } }];"
+      },
+      "id": "l-build-accepted",
+      "name": "Build Accepted Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4000, -240]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CACHE_API_URL }}/store",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "cache_key", "value": "={{ $json.cache_key }}" },
+            { "name": "response", "value": "={{ { text: $json.text, provider: $json.provider } }}" }
+          ]
+        },
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-cache-store",
+      "name": "Store In Cache",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4200, -380],
+      "notes": "Best-effort -- a cache-store failure just means the next identical request also computes fresh, not a request-level failure."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUDGET_API_URL }}/record-usage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "amount_usd", "value": "={{ $json.cost_usd }}" },
+            { "name": "provider", "value": "={{ $json.provider }}" },
+            { "name": "request_id", "value": "={{ $json.request_id }}" }
+          ]
+        },
+        "options": { "timeout": 5000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "l-record-cost",
+      "name": "Record Cost Against Budget",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4200, -300],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "Unlike the cache write, this one is retried -- an unrecorded spend is how the budget guardrail silently drifts from reality and stops protecting anything."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"request_id\": $json.request_id, \"text\": $json.text, \"provider\": $json.provider, \"cached\": false } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "l-respond-success",
+      "name": "Respond 200 Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4200, -220]
+    }
+  ],
+  "connections": {
+    "Completion Request Webhook": { "main": [[{ "node": "Validate Request", "type": "main", "index": 0 }]] },
+    "Validate Request": { "main": [[{ "node": "Request Valid?", "type": "main", "index": 0 }]] },
+    "Request Valid?": {
+      "main": [
+        [
+          { "node": "Check Response Cache", "type": "main", "index": 0 },
+          { "node": "Merge Cache + Request", "type": "main", "index": 1 }
+        ],
+        [{ "node": "Respond 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Response Cache": { "main": [[{ "node": "Merge Cache + Request", "type": "main", "index": 0 }]] },
+    "Merge Cache + Request": { "main": [[{ "node": "Cache Hit?", "type": "main", "index": 0 }]] },
+    "Cache Hit?": {
+      "main": [
+        [{ "node": "Respond From Cache", "type": "main", "index": 0 }],
+        [{ "node": "Classify Starting Tier", "type": "main", "index": 0 }]
+      ]
+    },
+    "Classify Starting Tier": {
+      "main": [
+        [
+          { "node": "Check All Provider Breakers", "type": "main", "index": 0 },
+          { "node": "Merge Breakers + Request", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Check All Provider Breakers": { "main": [[{ "node": "Merge Breakers + Request", "type": "main", "index": 0 }]] },
+    "Merge Breakers + Request": { "main": [[{ "node": "Start At Tier 1?", "type": "main", "index": 0 }]] },
+    "Start At Tier 1?": {
+      "main": [
+        [{ "node": "Tier 1 (Local LLM) Breaker Open?", "type": "main", "index": 0 }],
+        [
+          { "node": "Check Budget (Before Tier 2)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T2)", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Tier 1 (Local LLM) Breaker Open?": {
+      "main": [
+        [
+          { "node": "Check Budget (Before Tier 2)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T2)", "type": "main", "index": 1 }
+        ],
+        [
+          { "node": "Call Local LLM (Tier 1)", "type": "main", "index": 0 },
+          { "node": "Merge Local LLM Result + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Call Local LLM (Tier 1)": { "main": [[{ "node": "Merge Local LLM Result + State", "type": "main", "index": 0 }]] },
+    "Merge Local LLM Result + State": { "main": [[{ "node": "Local LLM Call OK?", "type": "main", "index": 0 }]] },
+    "Local LLM Call OK?": {
+      "main": [
+        [{ "node": "Extract Local LLM Response", "type": "main", "index": 0 }],
+        [
+          { "node": "Record Local LLM Breaker Failure", "type": "main", "index": 0 },
+          { "node": "Check Budget (Before Tier 2)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T2)", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Extract Local LLM Response": { "main": [[{ "node": "Validate Quality (Tier 1)", "type": "main", "index": 0 }]] },
+    "Validate Quality (Tier 1)": { "main": [[{ "node": "Tier 1 Quality OK?", "type": "main", "index": 0 }]] },
+    "Tier 1 Quality OK?": {
+      "main": [
+        [{ "node": "Build Accepted Response", "type": "main", "index": 0 }],
+        [
+          { "node": "Check Budget (Before Tier 2)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T2)", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Check Budget (Before Tier 2)": { "main": [[{ "node": "Merge Budget + State (T2)", "type": "main", "index": 0 }]] },
+    "Merge Budget + State (T2)": { "main": [[{ "node": "Budget OK For Tier 2?", "type": "main", "index": 0 }]] },
+    "Budget OK For Tier 2?": {
+      "main": [
+        [{ "node": "Tier 2 (Mid-Tier) Breaker Open?", "type": "main", "index": 0 }],
+        [
+          { "node": "Check Budget (Before Tier 3)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T3)", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Tier 2 (Mid-Tier) Breaker Open?": {
+      "main": [
+        [
+          { "node": "Check Budget (Before Tier 3)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T3)", "type": "main", "index": 1 }
+        ],
+        [
+          { "node": "Call Mid-Tier (Tier 2)", "type": "main", "index": 0 },
+          { "node": "Merge Mid-Tier Result + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Call Mid-Tier (Tier 2)": { "main": [[{ "node": "Merge Mid-Tier Result + State", "type": "main", "index": 0 }]] },
+    "Merge Mid-Tier Result + State": { "main": [[{ "node": "Mid-Tier Call OK?", "type": "main", "index": 0 }]] },
+    "Mid-Tier Call OK?": {
+      "main": [
+        [{ "node": "Extract Mid-Tier Response", "type": "main", "index": 0 }],
+        [
+          { "node": "Record Mid-Tier Breaker Failure", "type": "main", "index": 0 },
+          { "node": "Check Budget (Before Tier 3)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T3)", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Extract Mid-Tier Response": { "main": [[{ "node": "Validate Quality (Tier 2)", "type": "main", "index": 0 }]] },
+    "Validate Quality (Tier 2)": { "main": [[{ "node": "Tier 2 Quality OK?", "type": "main", "index": 0 }]] },
+    "Tier 2 Quality OK?": {
+      "main": [
+        [{ "node": "Build Accepted Response", "type": "main", "index": 0 }],
+        [
+          { "node": "Check Budget (Before Tier 3)", "type": "main", "index": 0 },
+          { "node": "Merge Budget + State (T3)", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Check Budget (Before Tier 3)": { "main": [[{ "node": "Merge Budget + State (T3)", "type": "main", "index": 0 }]] },
+    "Merge Budget + State (T3)": { "main": [[{ "node": "Budget OK For Tier 3?", "type": "main", "index": 0 }]] },
+    "Budget OK For Tier 3?": {
+      "main": [
+        [{ "node": "Tier 3 (Premium) Breaker Open?", "type": "main", "index": 0 }],
+        [{ "node": "Build Failure (Budget Exhausted)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Tier 3 (Premium) Breaker Open?": {
+      "main": [
+        [{ "node": "Build Failure (Premium Breaker Open)", "type": "main", "index": 0 }],
+        [
+          { "node": "Call Premium (Tier 3)", "type": "main", "index": 0 },
+          { "node": "Merge Premium Result + State", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Call Premium (Tier 3)": { "main": [[{ "node": "Merge Premium Result + State", "type": "main", "index": 0 }]] },
+    "Merge Premium Result + State": { "main": [[{ "node": "Premium Call OK?", "type": "main", "index": 0 }]] },
+    "Premium Call OK?": {
+      "main": [
+        [{ "node": "Extract Premium Response", "type": "main", "index": 0 }],
+        [
+          { "node": "Record Premium Breaker Failure", "type": "main", "index": 0 },
+          { "node": "Build Failure (All Providers Failed)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Extract Premium Response": { "main": [[{ "node": "Validate Quality (Tier 3)", "type": "main", "index": 0 }]] },
+    "Validate Quality (Tier 3)": { "main": [[{ "node": "Tier 3 Quality OK?", "type": "main", "index": 0 }]] },
+    "Tier 3 Quality OK?": {
+      "main": [
+        [{ "node": "Build Accepted Response", "type": "main", "index": 0 }],
+        [{ "node": "Build Failure (Quality Failed All Tiers)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Failure (Budget Exhausted)": {
+      "main": [
+        [
+          { "node": "Notify Ops (All Tiers Failed)", "type": "main", "index": 0 },
+          { "node": "Respond 503", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Failure (Premium Breaker Open)": {
+      "main": [
+        [
+          { "node": "Notify Ops (All Tiers Failed)", "type": "main", "index": 0 },
+          { "node": "Respond 503", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Failure (All Providers Failed)": {
+      "main": [
+        [
+          { "node": "Notify Ops (All Tiers Failed)", "type": "main", "index": 0 },
+          { "node": "Respond 503", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Failure (Quality Failed All Tiers)": {
+      "main": [
+        [
+          { "node": "Notify Ops (All Tiers Failed)", "type": "main", "index": 0 },
+          { "node": "Respond 503", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Accepted Response": {
+      "main": [
+        [
+          { "node": "Store In Cache", "type": "main", "index": 0 },
+          { "node": "Record Cost Against Budget", "type": "main", "index": 0 },
+          { "node": "Respond 200 Success", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  }
+}
