@@ -1,0 +1,1750 @@
+{
+  "name": "Scheduled Report Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "g-0",
+      "name": "Weekly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "Mondays 08:00 in the n8n instance time zone (set GENERIC_TIMEZONE, or edit this node). Each run reports the PREVIOUS Monday-Sunday (UTC dates)."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "reports/generate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "Manual / Backfill Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        150
+      ],
+      "notes": "POST {period_start, period_end, force?}. Replies once, at the end of the run. The schedule trigger has no caller, so scheduled runs just end (failures still alert).",
+      "webhookId": "report-generate"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "DATA_SOURCES_JSON",
+              "value": "[{\"name\": \"sales\", \"label\": \"Sales\", \"url\": \"http://localhost:4600/src/sales\"}, {\"name\": \"support\", \"label\": \"Support\", \"url\": \"http://localhost:4600/src/support\"}, {\"name\": \"infra\", \"label\": \"Infrastructure\", \"url\": \"http://localhost:4600/src/infra\"}]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "REPORT_NAME",
+              "value": "weekly_ops",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "REPORT_TITLE",
+              "value": "Weekly Ops Report",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "REPORT_STORE_API_URL",
+              "value": "http://localhost:4600",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "GOTENBERG_API_URL",
+              "value": "http://localhost:4600",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "DISTRIBUTION_API_URL",
+              "value": "http://localhost:4600",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "NOTIFY_API_URL",
+              "value": "http://localhost:4600",
+              "type": "string"
+            },
+            {
+              "id": "cfg-7",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-8",
+              "name": "GOTENBERG_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-9",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-10",
+              "name": "REPORT_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-11",
+              "name": "FALLBACK_RECIPIENT_EMAIL",
+              "value": "ops@example.com",
+              "type": "string"
+            },
+            {
+              "id": "cfg-12",
+              "name": "MAX_RECIPIENTS",
+              "value": 200,
+              "type": "number"
+            },
+            {
+              "id": "cfg-13",
+              "name": "MAX_PERIOD_DAYS",
+              "value": 92,
+              "type": "number"
+            },
+            {
+              "id": "cfg-14",
+              "name": "PROCESSING_TTL_SECONDS",
+              "value": 900,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "SOURCE_TIMEOUT_MS",
+              "value": 20000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-16",
+              "name": "PDF_TIMEOUT_MS",
+              "value": 30000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-17",
+              "name": "EMAIL_TIMEOUT_MS",
+              "value": 15000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-18",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-2",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT (apart from the schedule). Data sources (DATA_SOURCES_JSON), service URLs, recipients, limits. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// REPORT LAYOUT: the node for how the report LOOKS and reads. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. A mistake gives a clear 500 (report_misconfigured,\n// lines start \"Layout:\") and nothing is claimed, fetched or sent.\n// What you cannot change here, on purpose: values are always escaped, a source that was\n// unavailable is always shown as unavailable, an incomplete report always says so (page and email).\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst layout = {\n  // Extra CSS added after the built-in style (no \"<\", no @import, no url(...)).\n  css: '',\n  // Plain text under the title / at the end of the report.\n  intro: '',\n  footer: '',\n  // Symbol put in front of 'money' values.\n  currency: '',\n  // Order of the sections, by data source name. Sources you leave out follow in CONFIG order.\n  order: [],\n  // The PDF page. size: 'A4' | 'A3' | 'Letter' | 'Legal'; landscape: true | false; margin_mm: 0 to 50.\n  // null = the renderer's own default page.  Example: { size: 'A4', landscape: true, margin_mm: 12 }\n  page: null,\n  // The look. accent: a colour like '#0b5394'; font: 'sans' | 'serif' | 'mono'; font_size: 8 to 18 (px).\n  // null = the built-in look.  Example: { accent: '#0b5394', font: 'serif', font_size: 11 }\n  theme: null,\n  // Headline figures shown as cards under the title (at most 8). Each: { source, key, label?, format? }\n  //   key:    a key of an object source; a dotted path like 'by_region.west' also works.\n  //   agg:    'sum' | 'avg' | 'min' | 'max' | 'count' to total up a list of records (then also give \"column\",\n  //           except for 'count'). key may be left out when the source itself is the list.\n  // A source that was unavailable always shows \"unavailable\"; a value that is not there shows \"n/a\".\n  kpis: [],\n  // Per data source (the \"name\" in DATA_SOURCES_JSON). Everything is optional.\n  //   title:      heading (default: the source's label)\n  //   show:       only these keys / columns, in this order (default: all)\n  //   hide:       leave these keys / columns out\n  //   labels:     { key: 'Column heading' }\n  //   formats:    { key: 'number' | 'int' | 'money' | 'percent' | 'date' | 'text' }\n  //               ('percent' expects a fraction: 0.25 shows as 25%)\n  //   max_rows:   most rows shown in a table (1 to 500, default 50)\n  //   empty_text: what to say when the source returned nothing\n  //   note:       a sentence under the heading\n  //   style:      'cards' shows the single values of an object source as cards (default: a table)\n  //   sort:       { by: 'column', order: 'asc' | 'desc' } for every list of records in the section\n  //   total:      ['column', ...] adds a Total row (summed over ALL rows, also those cut by max_rows)\n  //   highlight:  [{ key: 'csat', op: '<', value: 4.5, tone: 'warn' }]  op: > >= < <= == !=; tone: good | warn | bad\n  sections: {\n    // sales: { title: 'Revenue & Costs', hide: ['average_order_value'], labels: { total_revenue: 'Total revenue' }, formats: { total_revenue: 'money' }, note: 'Figures are before refunds.' },\n  },\n  // The email. Use {title} {period_start} {period_end} {run_id}.\n  // (If the report is incomplete a note saying so is always added to the body.)\n  email: {\n    subject: '{title} {period_start} - {period_end}',\n    body: 'Attached is the {title} for {period_start} to {period_end}.',\n  },\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst em = pick(layout, 'email', {});\nconst norm = { page: pick(layout, 'page', null), theme: pick(layout, 'theme', null), kpis: pick(layout, 'kpis', []), css: pick(layout, 'css', ''), intro: pick(layout, 'intro', ''), footer: pick(layout, 'footer', ''), currency: pick(layout, 'currency', ''), order: pick(layout, 'order', []), sections: pick(layout, 'sections', {}),\n  email: { subject: pick(em, 'subject', '{title} {period_start} - {period_end}'), body: pick(em, 'body', 'Attached is the {title} for {period_start} to {period_end}.') }, _raw_keys: Object.keys(layout || {}), _raw_email_keys: Object.keys(em || {}), _is_obj: layout !== null && typeof layout === 'object' && !Array.isArray(layout) };\nconst it = $input.first();\nreturn [{ json: { ...it.json, layout: norm } }];\n"
+      },
+      "id": "g-3",
+      "name": "Report Layout",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "EDIT ME for how the report looks: section titles and order, which fields show, labels, number formats, intro and footer text, extra CSS and the email wording. Data only; checked on every run. Values stay escaped and an incomplete report always says so."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst inp = $input.first().json;\nconst manual = inp.headers !== undefined;\nconst triggered_by = manual ? 'manual' : 'schedule';\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, triggered_by, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: manual ? [] : [{ text: `Scheduled run did not start: ${error}${details ? ' (' + details.join('; ') + ')' : ''}` }] } }];\n\nif (manual && C.REPORT_AUTH_TOKEN && (inp.headers || {})['x-report-token'] !== C.REPORT_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity\nconst bad = [];\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nfor (const k of ['REPORT_STORE_API_URL', 'GOTENBERG_API_URL', 'DISTRIBUTION_API_URL', 'NOTIFY_API_URL']) if (!url(C[k])) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.SLACK_WEBHOOK_URL && !url(C.SLACK_WEBHOOK_URL)) bad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'GOTENBERG_HEADERS_JSON']) { try { if (!isObj(JSON.parse(C[k] || '{}'))) throw 0; } catch (e) { bad.push(`CONFIG.${k} must be a JSON object`); } }\nconst EMAIL = /^[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+$/;\nif (C.FALLBACK_RECIPIENT_EMAIL && !EMAIL.test(C.FALLBACK_RECIPIENT_EMAIL)) bad.push('CONFIG.FALLBACK_RECIPIENT_EMAIL must be blank or a valid email address');\nif (!/^[A-Za-z0-9._-]{1,64}$/.test(C.REPORT_NAME || '')) bad.push('CONFIG.REPORT_NAME must be 1-64 characters: letters, digits and . _ -');\nif (typeof C.REPORT_TITLE !== 'string' || !C.REPORT_TITLE.trim() || C.REPORT_TITLE.length > 120) bad.push('CONFIG.REPORT_TITLE must be 1-120 characters');\nfor (const k of ['MAX_RECIPIENTS', 'MAX_PERIOD_DAYS', 'PROCESSING_TTL_SECONDS', 'SOURCE_TIMEOUT_MS', 'PDF_TIMEOUT_MS', 'EMAIL_TIMEOUT_MS', 'REQUEST_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nconst sources = [];\ntry {\n  const raw = JSON.parse(C.DATA_SOURCES_JSON);\n  if (!Array.isArray(raw) || !raw.length) throw new Error('DATA_SOURCES_JSON must be a non-empty JSON array');\n  const seen = new Set();\n  raw.forEach((s, i) => {\n    const w = `DATA_SOURCES_JSON[${i}]`;\n    if (!isObj(s)) { bad.push(`${w} must be an object`); return; }\n    if (typeof s.name !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(s.name)) bad.push(`${w}.name must be 1-64 characters: letters, digits and . _ -`);\n    else if (seen.has(s.name)) bad.push(`${w}.name \"${s.name}\" is used twice`); else seen.add(s.name);\n    if (!url(s.url)) bad.push(`${w}.url must start with http(s)://`);\n    if (s.label !== undefined && (typeof s.label !== 'string' || !s.label.trim() || s.label.length > 100)) bad.push(`${w}.label must be a 1-100 character string`);\n    if (s.headers !== undefined && !isObj(s.headers)) bad.push(`${w}.headers must be an object`);\n    if (s.required !== undefined && typeof s.required !== 'boolean') bad.push(`${w}.required must be true or false`);\n    const t = s.timeout_ms === undefined ? Number(C.SOURCE_TIMEOUT_MS) : Number(s.timeout_ms);\n    if (!(t > 0 && t <= 300000)) bad.push(`${w}.timeout_ms must be between 1 and 300000`);\n    sources.push({ name: s.name, label: (s.label || s.name).trim(), url: s.url, headers: isObj(s.headers) ? s.headers : {}, required: s.required === true, timeout_ms: t });\n  });\n} catch (e) { bad.push('CONFIG.DATA_SOURCES_JSON is not valid: ' + e.message); }\n// ---- the Report Layout node\n{\n  const L = $('Report Layout').first().json.layout;\n  const lb = (m) => bad.push('Layout: ' + m);\n  const names = sources.map((s) => s.name);\n  const str = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;\n  const strList = (v, max) => Array.isArray(v) && v.length <= max && v.every((x) => str(x, 1, 64)) && new Set(v).size === v.length;\n  const FORMATS = ['number', 'int', 'money', 'percent', 'date', 'text'];\n  if (!L._is_obj) lb('layout must be an object');\n  else {\n    for (const k of L._raw_keys) if (!['css', 'intro', 'footer', 'currency', 'order', 'sections', 'email', 'page', 'theme', 'kpis'].includes(k)) lb(`${k} is not a known setting (css, intro, footer, currency, order, sections, email, page, theme, kpis)`);\n    if (L.page !== null) {\n      if (!isObj(L.page)) lb('page must be an object (or null)');\n      else {\n        for (const k of Object.keys(L.page)) if (!['size', 'landscape', 'margin_mm'].includes(k)) lb(`page.${k} is not a known setting (size, landscape, margin_mm)`);\n        if (L.page.size !== undefined && !['A4', 'A3', 'Letter', 'Legal'].includes(L.page.size)) lb('page.size must be A4, A3, Letter or Legal');\n        if (L.page.landscape !== undefined && typeof L.page.landscape !== 'boolean') lb('page.landscape must be true or false');\n        if (L.page.margin_mm !== undefined && !(typeof L.page.margin_mm === 'number' && L.page.margin_mm >= 0 && L.page.margin_mm <= 50)) lb('page.margin_mm must be a number from 0 to 50');\n      }\n    }\n    if (L.theme !== null) {\n      if (!isObj(L.theme)) lb('theme must be an object (or null)');\n      else {\n        for (const k of Object.keys(L.theme)) if (!['accent', 'font', 'font_size'].includes(k)) lb(`theme.${k} is not a known setting (accent, font, font_size)`);\n        if (L.theme.accent !== undefined && !/^#[0-9a-fA-F]{6}$/.test(L.theme.accent)) lb('theme.accent must be a colour written like #0b5394');\n        if (L.theme.font !== undefined && !['sans', 'serif', 'mono'].includes(L.theme.font)) lb('theme.font must be sans, serif or mono');\n        if (L.theme.font_size !== undefined && !(Number.isInteger(L.theme.font_size) && L.theme.font_size >= 8 && L.theme.font_size <= 18)) lb('theme.font_size must be a whole number from 8 to 18');\n      }\n    }\n    if (!Array.isArray(L.kpis) || L.kpis.length > 8) lb('kpis must be a list of at most 8 figures');\n    else L.kpis.forEach((k, i) => {\n      const w = `kpis[${i}]`;\n      if (!isObj(k)) { lb(`${w} must be an object`); return; }\n      for (const x of Object.keys(k)) if (!['source', 'key', 'label', 'format', 'agg', 'column'].includes(x)) lb(`${w}.${x} is not a known setting (source, key, label, format, agg, column)`);\n      if (!names.includes(k.source)) lb(`${w}.source must be a data source name from DATA_SOURCES_JSON (known names: ${names.join(', ')})`);\n      if (k.key !== undefined && !(typeof k.key === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(k.key))) lb(`${w}.key must be a key name or dotted path (letters, digits, _ . -)`);\n      if (k.label !== undefined && !str(k.label, 1, 60)) lb(`${w}.label must be 1 to 60 characters`);\n      if (k.format !== undefined && !FORMATS.includes(k.format)) lb(`${w}.format must be one of ${FORMATS.join(', ')}`);\n      if (k.agg !== undefined && !['sum', 'avg', 'min', 'max', 'count'].includes(k.agg)) lb(`${w}.agg must be sum, avg, min, max or count`);\n      if (k.agg === undefined && k.key === undefined) lb(`${w} needs a key (or an agg for a source that is a list)`);\n      if (k.agg !== undefined && k.agg !== 'count' && !(typeof k.column === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(k.column))) lb(`${w}.column is needed for agg \"${k.agg}\" (the column to ${k.agg})`);\n      if (k.column !== undefined && k.agg === undefined) lb(`${w}.column only makes sense together with agg`);\n    });\n    if (!str(L.css, 0, 5000) || /[<>]/.test(L.css) || /@import|url\\s*\\(|expression\\s*\\(/i.test(L.css)) lb('css must be text of at most 5000 characters with no < or >, no @import and no url(...)');\n    if (!str(L.intro, 0, 1000)) lb('intro must be text of at most 1000 characters');\n    if (!str(L.footer, 0, 1000)) lb('footer must be text of at most 1000 characters');\n    if (!str(L.currency, 0, 5)) lb('currency must be text of at most 5 characters');\n    if (!strList(L.order, 100) || !L.order.every((n) => names.includes(n))) lb('order must be a list of different data source names from DATA_SOURCES_JSON (known names: ' + names.join(', ') + ')');\n    if (!isObj(L.sections)) lb('sections must be an object');\n    else for (const [n, sec] of Object.entries(L.sections)) {\n      const w = `sections.${n}`;\n      if (!names.includes(n)) { lb(`${w}: \"${n}\" is not a data source name from DATA_SOURCES_JSON (known names: ${names.join(', ')})`); continue; }\n      if (!isObj(sec)) { lb(`${w} must be an object`); continue; }\n      for (const k of Object.keys(sec)) if (!['title', 'show', 'hide', 'labels', 'formats', 'max_rows', 'empty_text', 'note', 'style', 'sort', 'total', 'highlight'].includes(k)) lb(`${w}.${k} is not a known setting (title, show, hide, labels, formats, max_rows, empty_text, note, style, sort, total, highlight)`);\n      if (sec.style !== undefined && !['table', 'cards'].includes(sec.style)) lb(`${w}.style must be table or cards`);\n      if (sec.sort !== undefined) {\n        if (!isObj(sec.sort) || !str(sec.sort.by, 1, 64) || (sec.sort.order !== undefined && !['asc', 'desc'].includes(sec.sort.order)) || Object.keys(sec.sort).some((k) => !['by', 'order'].includes(k))) lb(`${w}.sort must be { by: 'column', order: 'asc' or 'desc' }`);\n      }\n      if (sec.total !== undefined && !strList(sec.total, 20)) lb(`${w}.total must be a list of at most 20 different column names`);\n      if (sec.highlight !== undefined) {\n        if (!Array.isArray(sec.highlight) || sec.highlight.length > 20) lb(`${w}.highlight must be a list of at most 20 rules`);\n        else sec.highlight.forEach((h, j) => {\n          const hw = `${w}.highlight[${j}]`;\n          if (!isObj(h)) { lb(`${hw} must be an object`); return; }\n          for (const k of Object.keys(h)) if (!['key', 'op', 'value', 'tone'].includes(k)) lb(`${hw}.${k} is not a known setting (key, op, value, tone)`);\n          if (!str(h.key, 1, 64)) lb(`${hw}.key must be a key or column name`);\n          if (!['>', '>=', '<', '<=', '==', '!='].includes(h.op)) lb(`${hw}.op must be one of > >= < <= == !=`);\n          if (!((typeof h.value === 'number' && isFinite(h.value)) || str(h.value, 0, 100))) lb(`${hw}.value must be a number or text of at most 100 characters`);\n          else if (typeof h.value === 'string' && !['==', '!='].includes(h.op)) lb(`${hw}: text values only work with == and !=`);\n          if (!['good', 'warn', 'bad'].includes(h.tone)) lb(`${hw}.tone must be good, warn or bad`);\n        });\n      }\n      if (sec.title !== undefined && !str(sec.title, 1, 100)) lb(`${w}.title must be 1 to 100 characters`);\n      for (const k of ['show', 'hide']) if (sec[k] !== undefined && !strList(sec[k], 50)) lb(`${w}.${k} must be a list of at most 50 different key names`);\n      if (sec.labels !== undefined && !(isObj(sec.labels) && Object.keys(sec.labels).length <= 50 && Object.values(sec.labels).every((x) => str(x, 1, 60)))) lb(`${w}.labels must be an object of key -> heading (1 to 60 characters)`);\n      if (sec.formats !== undefined && !(isObj(sec.formats) && Object.keys(sec.formats).length <= 50 && Object.values(sec.formats).every((x) => FORMATS.includes(x)))) lb(`${w}.formats must be an object of key -> one of ${FORMATS.join(', ')}`);\n      if (sec.max_rows !== undefined && !(Number.isInteger(sec.max_rows) && sec.max_rows >= 1 && sec.max_rows <= 500)) lb(`${w}.max_rows must be a whole number from 1 to 500`);\n      for (const k of ['empty_text', 'note']) if (sec[k] !== undefined && !str(sec[k], 1, 300)) lb(`${w}.${k} must be 1 to 300 characters`);\n    }\n    if (!isObj(L.email)) lb('email must be an object');\n    else {\n      for (const k of L._raw_email_keys) if (!['subject', 'body'].includes(k)) lb(`email.${k} is not a known setting (subject, body)`);\n      const PH = ['title', 'period_start', 'period_end', 'run_id'];\n      const phOk = (t) => [...t.matchAll(/\\{([A-Za-z_]+)\\}/g)].every((m) => PH.includes(m[1]));\n      if (!str(L.email.subject, 1, 200) || /[\\r\\n]/.test(L.email.subject)) lb('email.subject must be one line of 1 to 200 characters');\n      else if (!phOk(L.email.subject)) lb('email.subject uses an unknown {placeholder} (allowed: {title} {period_start} {period_end} {run_id})');\n      if (!str(L.email.body, 1, 2000)) lb('email.body must be 1 to 2000 characters');\n      else if (!phOk(L.email.body)) lb('email.body uses an unknown {placeholder} (allowed: {title} {period_start} {period_end} {run_id})');\n    }\n  }\n}\nif (bad.length) return reject(500, 'report_misconfigured', bad);\n\n// ---- the period\nconst DAY = 86400000;\nconst parseDate = (s) => { if (typeof s !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) return null; const d = new Date(s + 'T00:00:00Z'); return !isNaN(d) && d.toISOString().slice(0, 10) === s ? d : null; };\nlet period_start, period_end, force = false;\nif (manual) {\n  const b = inp.body;\n  if (!isObj(b)) return reject(400, 'validation_failed', ['body must be a JSON object']);\n  const errors = [];\n  const ds = parseDate(b.period_start), de = parseDate(b.period_end);\n  if (!ds) errors.push('period_start must be a real ISO date (YYYY-MM-DD)');\n  if (!de) errors.push('period_end must be a real ISO date (YYYY-MM-DD)');\n  if (ds && de) {\n    if (ds > de) errors.push('period_start must not be after period_end');\n    else if ((de - ds) / DAY + 1 > Number(C.MAX_PERIOD_DAYS)) errors.push(`the period must not be longer than ${C.MAX_PERIOD_DAYS} days`);\n  }\n  if (b.force !== undefined && b.force !== null && typeof b.force !== 'boolean') errors.push('force must be true or false');\n  if (errors.length) return reject(400, 'validation_failed', errors);\n  period_start = b.period_start; period_end = b.period_end; force = b.force === true;\n} else {\n  const now = new Date();\n  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());\n  const thisMonday = today - ((now.getUTCDay() + 6) % 7) * DAY;\n  period_start = new Date(thisMonday - 7 * DAY).toISOString().slice(0, 10);\n  period_end = new Date(thisMonday - 1 * DAY).toISOString().slice(0, 10);\n}\nconst run_id = `${C.REPORT_NAME}-${period_start}_${period_end}`;\nreturn [{ json: { ok: true, triggered_by, force, period_start, period_end, run_id, sources, tail: null } }];"
+      },
+      "id": "g-4",
+      "name": "Plan Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "Checks auth (manual only), CONFIG including every data source, and the period. Scheduled runs compute the previous Monday-Sunday. run_id = report name + exact period, so a custom backfill can never collide with the weekly run."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-5",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-5",
+      "name": "Plan OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.REPORT_STORE_API_URL.replace(/\\/+$/, '') + '/reports/' + encodeURIComponent($('Plan Run').first().json.run_id) + '/claim' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { ttl_seconds: $('CONFIG').first().json.PROCESSING_TTL_SECONDS, force: $('Plan Run').first().json.force } }}"
+      },
+      "id": "g-6",
+      "name": "Claim Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        0
+      ],
+      "notes": "POST /reports/{run_id}/claim {ttl_seconds, force} -> {claimed, record:{status, delivered[]}}. ATOMIC: exactly one concurrent caller gets claimed:true. This replaces a read-then-write check, which lets two runs both pass.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const Pl = $('Plan Run').first().json;\nconst r = $input.first().json;\nconst b = r.statusCode === 200 && r.body && typeof r.body === 'object' ? r.body : null;\nconst manual = Pl.triggered_by === 'manual';\nconst end = (status, body, notes = []) => [{ json: { ok: false, claimed: false, triggered_by: Pl.triggered_by, http_status: status, response_body: body, notifications: notes } }];\nif (!b || typeof b.claimed !== 'boolean') {\n  return end(503, { error: 'report_store_unavailable', run_id: Pl.run_id, retry: true }, [{ text: `Run ${Pl.run_id} not started: the report store could not be reached, so exactly-once delivery cannot be guaranteed.` }]);\n}\nconst rec = b.record && typeof b.record === 'object' ? b.record : {};\nif (!b.claimed) {\n  if (rec.status === 'sent') return end(200, { status: 'skipped_already_sent', run_id: Pl.run_id });\n  return end(409, { error: 'run_in_progress', run_id: Pl.run_id, status: rec.status || 'processing' });\n}\nconst delivered_before = Array.isArray(rec.delivered) ? rec.delivered.filter((x) => typeof x === 'string') : [];\nreturn [{ json: { ok: true, claimed: true, delivered_before } }];"
+      },
+      "id": "g-7",
+      "name": "Claim Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "notes": "claimed -> carry on (possibly resuming a partial run). Already sent -> skip. Someone else is running it -> 409. Store unreachable -> stop (503): without the claim we cannot promise not to send twice."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-8",
+              "leftValue": "={{ $json.claimed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-8",
+      "name": "Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const Pl = $('Plan Run').first().json;\nreturn Pl.sources.map((s, i) => {\n  const base = s.url.split('#')[0];\n  const url = base + (base.includes('?') ? '&' : '?') + 'start=' + encodeURIComponent(Pl.period_start) + '&end=' + encodeURIComponent(Pl.period_end);\n  return { json: { i, name: s.name, url, headers: s.headers, timeout_ms: s.timeout_ms } };\n});"
+      },
+      "id": "g-9",
+      "name": "Build Source Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "One item per data source from DATA_SOURCES_JSON, with ?start=&end= added to its URL."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify($json.headers) }}",
+        "options": {
+          "timeout": "={{ $json.timeout_ms }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-10",
+      "name": "Fetch Source",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2520,
+        0
+      ],
+      "notes": "Fetches every source, one after another. A source that fails continues as an error item, so one slow or dead source never stops the others.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const classify = (r, s) => {\n  const base = { name: s.name, label: s.label, required: s.required };\n  if (r.error !== undefined || typeof r.statusCode !== 'number') return { ...base, available: false, retriable: true, detail: 'request failed: ' + String((r.error && (r.error.message || r.error)) || 'no response').slice(0, 160) };\n  if (r.statusCode >= 400) return { ...base, available: false, retriable: r.statusCode >= 500 || r.statusCode === 408 || r.statusCode === 429, detail: 'HTTP ' + r.statusCode };\n  const d = r.body;\n  if (d === null || typeof d !== 'object') return { ...base, available: false, retriable: false, detail: 'response was not JSON data' };   // e.g. an HTML maintenance page\n  return { ...base, available: true, data: d };\n};\nconst summarize = (out) => {\n  const missing = out.filter((s) => !s.available);\n  const required_missing = missing.filter((s) => s.required).map((s) => s.name);\n  let fail = null;\n  if (!out.some((s) => s.available)) fail = { status: 'failed_no_data', http_status: 502, detail: 'every data source was unavailable', key: 'no_data' };\n  else if (required_missing.length) fail = { status: 'failed_required_source_unavailable', http_status: 502, detail: 'required source unavailable: ' + required_missing.join(', '), key: 'required_source' };\n  return { ok: !fail, fail, results: out, missing_sections: missing.map((s) => s.name) };\n};\nconst Pl = $('Plan Run').first().json;\nconst items = $input.all();\nconst out = Pl.sources.map((s, i) => classify((items[i] && items[i].json) || {}, s));\nconst retry_needed = out.some((s) => !s.available && s.retriable);\nreturn [{ json: { ...summarize(out), retry_needed } }];"
+      },
+      "id": "g-11",
+      "name": "Collect Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ],
+      "notes": "Turns each reply into {available, data | detail}. \"Unavailable\" is kept strictly apart from \"no activity\" (an empty answer). All sources down, or a source marked required down, stops the run instead of emailing a hollow report."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-12",
+              "leftValue": "={{ $json.retry_needed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-12",
+      "name": "Retry Sources?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const Pl = $('Plan Run').first().json;\nconst prev = $input.first().json.results;\nconst reqs = $('Build Source Requests').all();\nreturn reqs.filter((r, i) => prev[i] && !prev[i].available && prev[i].retriable).map((r) => ({ json: r.json }));"
+      },
+      "id": "g-13",
+      "name": "Build Source Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ],
+      "notes": "Second chance, only for sources that failed in a way that can be transient (network error, timeout, 5xx, 408, 429)."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify($json.headers) }}",
+        "options": {
+          "timeout": "={{ $json.timeout_ms }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-14",
+      "name": "Fetch Source (retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3640,
+        0
+      ],
+      "notes": "Same request as Fetch Source, for the failed sources only.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const classify = (r, s) => {\n  const base = { name: s.name, label: s.label, required: s.required };\n  if (r.error !== undefined || typeof r.statusCode !== 'number') return { ...base, available: false, retriable: true, detail: 'request failed: ' + String((r.error && (r.error.message || r.error)) || 'no response').slice(0, 160) };\n  if (r.statusCode >= 400) return { ...base, available: false, retriable: r.statusCode >= 500 || r.statusCode === 408 || r.statusCode === 429, detail: 'HTTP ' + r.statusCode };\n  const d = r.body;\n  if (d === null || typeof d !== 'object') return { ...base, available: false, retriable: false, detail: 'response was not JSON data' };   // e.g. an HTML maintenance page\n  return { ...base, available: true, data: d };\n};\nconst summarize = (out) => {\n  const missing = out.filter((s) => !s.available);\n  const required_missing = missing.filter((s) => s.required).map((s) => s.name);\n  let fail = null;\n  if (!out.some((s) => s.available)) fail = { status: 'failed_no_data', http_status: 502, detail: 'every data source was unavailable', key: 'no_data' };\n  else if (required_missing.length) fail = { status: 'failed_required_source_unavailable', http_status: 502, detail: 'required source unavailable: ' + required_missing.join(', '), key: 'required_source' };\n  return { ok: !fail, fail, results: out, missing_sections: missing.map((s) => s.name) };\n};\nconst Pl = $('Plan Run').first().json;\nconst first = $('Collect Sources').first().json.results;\nconst retried = $input.all();\nconst reqs = $('Build Source Retry').all();\nconst byName = {};\nreqs.forEach((q, k) => { const s = Pl.sources.find((x) => x.name === q.json.name); byName[q.json.name] = classify((retried[k] && retried[k].json) || {}, s); });\nconst out = first.map((r) => byName[r.name] || r);\nreturn [{ json: summarize(out) }];"
+      },
+      "id": "g-15",
+      "name": "Merge Source Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        0
+      ],
+      "notes": "Replaces the failed results with the retry results and re-assesses completeness."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-16",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-16",
+      "name": "Data OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst Pl = $('Plan Run').first().json;\nconst S = $input.first().json;\nconst esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\nconst human = (k) => esc(String(k).replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst num = (n) => { if (!isFinite(n)) return String(n); const r = Math.round(n * 100) / 100; const [i, d] = String(Math.abs(r)).split('.'); return (r < 0 ? '-' : '') + i.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',') + (d ? '.' + d : ''); };\nconst scalar = (v) => v === null || v === undefined ? '' : typeof v === 'number' ? num(v) : String(v);\nconst LY = $('Report Layout').first().json.layout;\nconst cur = LY.currency;\nconst fmtVal = (f, v) => {\n  if (typeof v === 'number' && isFinite(v)) {\n    if (f === 'int') return num(Math.round(v));\n    if (f === 'money') return cur + (v < 0 ? '-' : '') + Math.abs(v).toFixed(2).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');\n    if (f === 'percent') return (Math.round(v * 1000) / 10) + '%';\n    return scalar(v);\n  }\n  if (f === 'date' && typeof v === 'string') return v.slice(0, 10);\n  return scalar(v);\n};\nconst tone = (sec, key, v) => {\n  if (!sec.highlight) return '';\n  for (const h of sec.highlight) {\n    if (h.key !== key) continue;\n    let hit = false;\n    if (typeof h.value === 'number') {\n      if (typeof v === 'number' && isFinite(v)) hit = h.op === '>' ? v > h.value : h.op === '>=' ? v >= h.value : h.op === '<' ? v < h.value : h.op === '<=' ? v <= h.value : h.op === '==' ? v === h.value : v !== h.value;\n    } else if (v !== null && v !== undefined && typeof v !== 'object') hit = h.op === '==' ? String(v) === h.value : String(v) !== h.value;\n    if (hit) return ` class=\"tone-${h.tone}\"`;\n  }\n  return '';\n};\nconst sortRows = (rows, so) => {\n  const dir = so.order === 'desc' ? -1 : 1;\n  const val = (r) => (r && r[so.by] !== undefined ? r[so.by] : null);\n  return rows.map((r, i) => ({ r, i })).sort((a, b) => {\n    const x = val(a.r), y = val(b.r);\n    if (x === null && y === null) return a.i - b.i;\n    if (x === null) return 1;\n    if (y === null) return -1;\n    const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y));\n    return c * dir || a.i - b.i;\n  }).map((o) => o.r);\n};\nfunction kv(obj, depth, sec, inherit) {\n  let keys = Object.keys(obj);\n  if (depth === 0 && sec.show) keys = sec.show.filter((k) => keys.includes(k));\n  if (sec.hide) keys = keys.filter((k) => !sec.hide.includes(k));\n  const lab = (k) => (sec.labels && sec.labels[k] !== undefined ? esc(sec.labels[k]) : human(k));\n  const rows = keys.map((k) => {\n    const v = obj[k], f = (sec.formats && sec.formats[k]) || inherit;\n    if (isObj(v) && depth < 2) return `<tr><th>${lab(k)}</th><td>${kv(v, depth + 1, sec, f)}</td></tr>`;\n    if (Array.isArray(v) || isObj(v)) return `<tr><th>${lab(k)}</th><td>${arr(v, sec)}</td></tr>`;\n    return `<tr><th>${lab(k)}</th><td${tone(sec, k, v)}>${esc(fmtVal(f, v))}</td></tr>`;\n  });\n  return `<table>${rows.join('')}</table>`;\n}\nfunction arr(v, sec) {\n  if (!Array.isArray(v)) return `<code>${esc(JSON.stringify(v))}</code>`;\n  if (!v.length) return '<em>none</em>';\n  const max = sec.max_rows || 50;\n  const cell = (c, x) => esc(isObj(x) || Array.isArray(x) ? JSON.stringify(x) : fmtVal(sec.formats && sec.formats[c], x));\n  if (v.every(isObj)) {\n    let cols = [...new Set(v.flatMap((o) => Object.keys(o)))];\n    if (sec.show) cols = sec.show.filter((c) => cols.includes(c));\n    if (sec.hide) cols = cols.filter((c) => !sec.hide.includes(c));\n    cols = cols.slice(0, 12);\n    const lab = (c) => (sec.labels && sec.labels[c] !== undefined ? esc(sec.labels[c]) : human(c));\n    const rowsAll = sec.sort ? sortRows(v, sec.sort) : v;\n    const rows = rowsAll.slice(0, max).map((o) => `<tr>${cols.map((c) => `<td${tone(sec, c, o[c])}>${cell(c, o[c])}</td>`).join('')}</tr>`).join('');\n    let totalRow = '';\n    if (sec.total) {\n      const totalSrc = v;\n      const tc = cols.filter((c) => sec.total.includes(c));\n      if (tc.length) {\n        const labelCol = cols.find((c) => !tc.includes(c));\n        totalRow = `<tr class=\"total\">${cols.map((c) => { if (tc.includes(c)) { const nums = totalSrc.map((o) => o[c]).filter((x) => typeof x === 'number' && isFinite(x)); return `<td>${esc(fmtVal(sec.formats && sec.formats[c], nums.reduce((a, b) => a + b, 0)))}</td>`; } return `<td>${c === labelCol ? 'Total' : ''}</td>`; }).join('')}</tr>`;\n      }\n    }\n    return `<table class=\"grid\"><tr>${cols.map((c) => `<th>${lab(c)}</th>`).join('')}</tr>${rows}${totalRow}</table>${v.length > max ? `<p><em>${v.length - max} more rows not shown</em></p>` : ''}`;\n  }\n  return `<ul>${v.slice(0, max).map((x) => `<li>${cell(null, x)}</li>`).join('')}</ul>`;\n}\nconst section = (s) => {\n  const sec = LY.sections[s.name] || {};\n  const title = esc(sec.title || s.label);\n  if (!s.available) return `<h2>${title}</h2><p class=\"warn\"><em>Data unavailable for this period (${esc(s.detail)}).</em></p>`;   // fixed: a layout cannot hide this\n  const d = s.data, note = sec.note ? `<p class=\"meta\">${esc(sec.note)}</p>` : '';\n  if (Array.isArray(d)) return `<h2>${title}</h2>${note}${arr(d, sec)}`;\n  if (!Object.keys(d).length) return `<h2>${title}</h2>${note}<p><em>${esc(sec.empty_text || 'No data returned for this period.')}</em></p>`;\n  if (sec.style === 'cards') {\n    let keys = Object.keys(d);\n    if (sec.show) keys = sec.show.filter((k) => keys.includes(k));\n    if (sec.hide) keys = keys.filter((k) => !sec.hide.includes(k));\n    const simple = keys.filter((k) => d[k] === null || typeof d[k] !== 'object');\n    const rest = {};\n    for (const k of keys) if (!simple.includes(k)) rest[k] = d[k];\n    const lab = (k) => (sec.labels && sec.labels[k] !== undefined ? esc(sec.labels[k]) : human(k));\n    const cards = `<div class=\"kpis\">${simple.map((k) => `<div class=\"kpi\"><span class=\"lab\">${lab(k)}</span><b${tone(sec, k, d[k])}>${esc(fmtVal(sec.formats && sec.formats[k], d[k]))}</b></div>`).join('')}</div>`;\n    return `<h2>${title}</h2>${note}${simple.length ? cards : ''}${Object.keys(rest).length ? kv(rest, 0, { ...sec, show: undefined, hide: undefined }, undefined) : ''}`;\n  }\n  return `<h2>${title}</h2>${note}${kv(d, 0, sec, undefined)}`;\n};\nconst THEME = LY.theme || {};\nconst FONTS = { sans: 'Helvetica,Arial,sans-serif', serif: \"Georgia,'Times New Roman',serif\", mono: \"'Courier New',monospace\" };\nconst PAPER = { A4: 'A4', A3: 'A3', Letter: 'letter', Legal: 'legal' };\nconst themeCss = (THEME.font ? `body{font-family:${FONTS[THEME.font]}}` : '') + (THEME.font_size ? `body{font-size:${THEME.font_size}px}` : '')\n  + (THEME.accent ? `h1,h2{color:${THEME.accent}}h2{border-bottom-color:${THEME.accent}}table.grid th{background:${THEME.accent};color:#fff;border-color:${THEME.accent}}.kpi{border-color:${THEME.accent}}` : '');\nconst pageCss = LY.page ? `@page{size:${PAPER[LY.page.size || 'Letter']}${LY.page.landscape ? ' landscape' : ''};margin:${LY.page.margin_mm === undefined ? 10 : LY.page.margin_mm}mm}` : '';\nconst dig = (o, path) => path.split('.').reduce((a, k) => (isObj(a) ? a[k] : undefined), o);\nconst kpiCard = (k) => {\n  const sres = S.results.find((x) => x.name === k.source);\n  const lab = esc(k.label || (k.agg === 'count' ? 'Rows' : human(k.key || k.column || k.source)));\n  if (!sres || !sres.available) return `<div class=\"kpi\"><span class=\"lab\">${lab}</span><b class=\"warn\">unavailable</b></div>`;   // fixed: a layout cannot hide this\n  let val = k.key !== undefined ? dig(sres.data, k.key) : sres.data;\n  let out = 'n/a';\n  if (k.agg) {\n    if (Array.isArray(val)) {\n      if (k.agg === 'count') out = fmtVal(k.format, val.length);\n      else {\n        const nums = val.map((r) => (isObj(r) ? r[k.column] : undefined)).filter((x) => typeof x === 'number' && isFinite(x));\n        if (nums.length) out = fmtVal(k.format, k.agg === 'sum' ? nums.reduce((a, b) => a + b, 0) : k.agg === 'avg' ? nums.reduce((a, b) => a + b, 0) / nums.length : k.agg === 'min' ? Math.min(...nums) : Math.max(...nums));\n      }\n    }\n  } else if (val !== undefined && val !== null && typeof val !== 'object') out = fmtVal(k.format, val);\n  return `<div class=\"kpi\"><span class=\"lab\">${lab}</span><b>${esc(out)}</b></div>`;\n};\nconst missingLabels = S.results.filter((s) => !s.available).map((s) => s.label);\nconst rank = (n) => { const i = LY.order.indexOf(n); return i < 0 ? 1e6 : i; };\nconst ordered = S.results.map((s, i) => ({ s, i })).sort((a, b) => rank(a.s.name) - rank(b.s.name) || a.i - b.i).map((x) => x.s);\nconst html = `<!doctype html><html><head><meta charset=\"utf-8\"><style>\nbody{font-family:Helvetica,Arial,sans-serif;font-size:12px;color:#111;margin:24px}\nh1{font-size:20px;margin:0 0 4px}h2{font-size:15px;border-bottom:1px solid #ccc;padding-bottom:3px;margin-top:22px}\ntable{border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:2px 10px 2px 0}table.grid th,table.grid td{border:1px solid #ddd;padding:3px 6px}\n.warn{color:#b00020}.meta{color:#555}\n.kpis{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.kpi{border:1px solid #ddd;border-radius:4px;padding:6px 10px;min-width:110px}.kpi b{display:block;font-size:16px}.kpi .lab{color:#555;font-size:10px}\n.tone-good{color:#0a7d36;font-weight:bold}.tone-warn{color:#a15c00;font-weight:bold}.tone-bad{color:#b00020;font-weight:bold}tr.total td{font-weight:bold;border-top:2px solid #999}\n${themeCss}${pageCss}\n${LY.css}\n</style></head><body>\n<h1>${esc(C.REPORT_TITLE)}</h1>\n<p class=\"meta\">${esc(Pl.period_start)} to ${esc(Pl.period_end)} &middot; run ${esc(Pl.run_id)}</p>\n${LY.intro ? `<p>${esc(LY.intro)}</p>` : ''}\n${LY.kpis.length ? `<div class=\"kpis\">${LY.kpis.map(kpiCard).join('')}</div>` : ''}\n${missingLabels.length ? `<p class=\"warn\"><strong>Incomplete report:</strong> the following sections are missing because their data source was unavailable: ${esc(missingLabels.join(', '))}.</p>` : ''}\n${ordered.map(section).join('\\n')}\n${LY.footer ? `<p class=\"meta\">${esc(LY.footer)}</p>` : ''}\n</body></html>`;\nconst binary = { data: await this.helpers.prepareBinaryData(Buffer.from(html, 'utf8'), 'index.html', 'text/html') };\nreturn [{ json: { ok: true, html_bytes: Buffer.byteLength(html), missing_sections: S.missing_sections }, binary }];"
+      },
+      "id": "g-17",
+      "name": "Render Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        0
+      ],
+      "notes": "Turns each source's JSON into a table (key/value, rows of records, lists), with every value HTML-escaped so data can never inject markup. Builds the index.html file Gotenberg expects."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.GOTENBERG_API_URL.replace(/\\/+$/, '') + '/forms/chromium/convert/html' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.GOTENBERG_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "preferCssPageSize",
+              "value": "={{ $('Report Layout').first().json.layout.page ? 'true' : 'false' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.PDF_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "g-18",
+      "name": "Render PDF (Gotenberg)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4760,
+        0
+      ],
+      "notes": "POST multipart/form-data with one file part named \"files\" called index.html (Gotenberg's contract). NOT neverError: a 5xx must throw so the 3 retries really happen; a final failure continues down the failure path.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "jsCode": "const Pl = $('Plan Run').first().json;\nconst r = $input.first();\nconst fail = (detail) => [{ json: { ok: false, fail: { status: 'failed_pdf_generation', http_status: 502, detail, key: 'pdf' } } }];\nif (r.json.error) return fail('renderer error: ' + String(r.json.error.message || r.json.error).slice(0, 200));\nif (r.json.statusCode !== 200 || !r.binary || !r.binary.data) return fail('renderer returned status ' + r.json.statusCode);\nconst buf = await this.helpers.getBinaryDataBuffer(0, 'data');\nif (buf.length < 8 || buf.slice(0, 4).toString('latin1') !== '%PDF') return fail('renderer response is not a PDF');\nr.binary.data.fileName = `${Pl.run_id}.pdf`;\nr.binary.data.mimeType = 'application/pdf';\nreturn [{ json: { ok: true, pdf_bytes: buf.length }, binary: { data: r.binary.data } }];"
+      },
+      "id": "g-19",
+      "name": "Check PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ],
+      "notes": "Does not trust a 200: the bytes must start with %PDF before anything is archived or emailed."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-20",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-20",
+      "name": "PDF OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.REPORT_STORE_API_URL.replace(/\\/+$/, '') + '/reports/' + encodeURIComponent($('Plan Run').first().json.run_id) + '/archive' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "pdf",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "period_start",
+              "value": "={{ $('Plan Run').first().json.period_start }}"
+            },
+            {
+              "name": "period_end",
+              "value": "={{ $('Plan Run').first().json.period_end }}"
+            },
+            {
+              "name": "missing_sections",
+              "value": "={{ ($('Data OK?').first().json.missing_sections || []).join(',') }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.PDF_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-21",
+      "name": "Archive PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5600,
+        0
+      ],
+      "notes": "POST /reports/{run_id}/archive (multipart: a \"pdf\" file part + fields) -> {archive_url}. Must be idempotent per run_id because it is retried (3 tries; not neverError so 5xx retries).",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst url = r.body && typeof r.body === 'object' ? r.body.archive_url : null;\nconst ok = !r.error && typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300 && typeof url === 'string' && url;\nreturn [{ json: { archived: !!ok, archive_url: ok ? url : null, archive_detail: ok ? null : (r.error ? String(r.error.message || r.error).slice(0, 160) : 'archive returned status ' + r.statusCode) } }];"
+      },
+      "id": "g-22",
+      "name": "Check Archive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5880,
+        0
+      ],
+      "notes": "Archive and delivery are separate concerns: an archive failure does NOT stop the emails. It is reported as a warning and alerted."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.DISTRIBUTION_API_URL.replace(/\\/+$/, '') + '/subscribers?report=' + encodeURIComponent($('CONFIG').first().json.REPORT_NAME) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-23",
+      "name": "Fetch Subscribers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6160,
+        0
+      ],
+      "notes": "GET /subscribers?report=NAME -> {emails:[...]}. Any failure or empty list falls back to FALLBACK_RECIPIENT_EMAIL.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst Pl = $('Plan Run').first().json;\nconst Cl = $('Claim Verdict').first().json;\nconst r = $input.first().json;\nconst EMAIL = /^[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+$/;\nconst fail = (status, detail, key) => [{ json: { ok: false, fail: { status, http_status: 502, detail, key } } }];\nlet list = [], source = 'subscribers';\nif (r.statusCode === 200 && r.body && Array.isArray(r.body.emails) && r.body.emails.length) list = r.body.emails;\nelse { source = 'fallback'; list = C.FALLBACK_RECIPIENT_EMAIL ? [C.FALLBACK_RECIPIENT_EMAIL] : []; }\nconst seen = new Set(), all = [], skipped_invalid = [];\nfor (const x of list) {\n  const e = typeof x === 'string' ? x.trim().toLowerCase() : '';\n  if (!e || e.length > 254 || !EMAIL.test(e)) { skipped_invalid.push(String(x).slice(0, 80)); continue; }\n  if (!seen.has(e)) { seen.add(e); all.push(e); }\n}\nif (!all.length) return fail('failed_no_recipients', 'no valid recipients (subscriber list unavailable or empty, and no valid FALLBACK_RECIPIENT_EMAIL)', 'no_recipients');\nif (all.length > Number(C.MAX_RECIPIENTS)) return fail('failed_too_many_recipients', `${all.length} recipients exceeds MAX_RECIPIENTS (${C.MAX_RECIPIENTS}); nothing was sent`, 'too_many_recipients');\nconst done = new Set(Cl.delivered_before.map((x) => x.toLowerCase()));   // a resumed run skips people who already got it\nconst to_send = all.filter((e) => !done.has(e));\nconst already_delivered = all.filter((e) => done.has(e));\nreturn [{ json: { ok: true, recipient_source: source, all, to_send, already_delivered, skipped_invalid } }];"
+      },
+      "id": "g-24",
+      "name": "Resolve Recipients",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6440,
+        0
+      ],
+      "notes": "Validates and de-duplicates addresses (case-insensitive), falls back if the list is unavailable, stops if there is nobody (or suspiciously many), and - when resuming a partially delivered run - skips people who already received the report."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-25",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-25",
+      "name": "Recipients OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-26",
+              "leftValue": "={{ $json.to_send.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-26",
+      "name": "Anything To Send?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst Pl = $('Plan Run').first().json;\nconst R = $input.first().json;\nconst pdf = $('Check PDF').first().binary.data;\nconst missing = $('Data OK?').first().json.missing_sections;\nconst LY = $('Report Layout').first().json.layout;\nconst vals = { title: C.REPORT_TITLE, period_start: Pl.period_start, period_end: Pl.period_end, run_id: Pl.run_id };\nconst fill = (t) => t.replace(/\\{(title|period_start|period_end|run_id)\\}/g, (m, k) => vals[k]);   // one pass: values are never re-read as placeholders\nconst subject = fill(LY.email.subject).replace(/[\\r\\n]+/g, ' ');\nconst body = fill(LY.email.body) + (missing.length ? `\\n\\nNote: this report is incomplete. Missing sections: ${missing.join(', ')}.` : '');\nconst stamp = Pl.force ? '|forced-' + Date.now() : '';   // a forced re-send must get fresh keys, or the mail service would drop it as a duplicate\nreturn R.to_send.map((email) => ({ json: { email, subject, body, idempotency_key: `${Pl.run_id}|${email}${stamp}` }, binary: { data: pdf } }));"
+      },
+      "id": "g-27",
+      "name": "Prepare Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        0
+      ],
+      "notes": "One item per recipient, each carrying the PDF (the binary is copied onto every item explicitly: it does not follow a fan-out by itself). The idempotency key lets the mail service drop a retry that already went out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.NOTIFY_API_URL.replace(/\\/+$/, '') + '/send-with-attachment' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.email }}"
+            },
+            {
+              "name": "subject",
+              "value": "={{ $json.subject }}"
+            },
+            {
+              "name": "body",
+              "value": "={{ $json.body }}"
+            },
+            {
+              "name": "idempotency_key",
+              "value": "={{ $json.idempotency_key }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachment",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.EMAIL_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-28",
+      "name": "Send Report Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7560,
+        0
+      ],
+      "notes": "POST /send-with-attachment (multipart: to, subject, body, idempotency_key, attachment file). Runs once per recipient; each is isolated (a bad address becomes one failed result, never a failed batch) and transient failures get a second try.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sent = $('Prepare Emails').all();\nconst results = $input.all().map((it, i) => {\n  const r = it.json, email = sent[i] ? sent[i].json.email : null;\n  const status = typeof r.statusCode === 'number' ? r.statusCode : null;\n  const ok = !r.error && status !== null && status >= 200 && status < 300;\n  const retriable = !ok && (status === null || status >= 500 || status === 408 || status === 429);\n  return { email, ok, retriable, detail: ok ? null : (r.error ? String(r.error.message || r.error).slice(0, 120) : 'HTTP ' + status) };\n});\nreturn [{ json: { results, retry_needed: results.some((x) => x.retriable) } }];"
+      },
+      "id": "g-29",
+      "name": "Collect Sends",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7840,
+        0
+      ],
+      "notes": "Pairs each send result with its recipient. A bad address (4xx) is final; a network error, timeout, 5xx, 408 or 429 gets one more try."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-30",
+              "leftValue": "={{ $json.retry_needed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-30",
+      "name": "Retry Sends?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $input.first().json.results;\nconst all = $('Prepare Emails').all();\nreturn all.filter((it, i) => prev[i] && prev[i].retriable).map((it) => ({ json: it.json, binary: it.binary }));"
+      },
+      "id": "g-31",
+      "name": "Prepare Send Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8400,
+        0
+      ],
+      "notes": "Only the recipients whose first attempt may have been a transient failure. Same idempotency key as before, so a mail service that actually did send the first time drops the duplicate."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.NOTIFY_API_URL.replace(/\\/+$/, '') + '/send-with-attachment' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.email }}"
+            },
+            {
+              "name": "subject",
+              "value": "={{ $json.subject }}"
+            },
+            {
+              "name": "body",
+              "value": "={{ $json.body }}"
+            },
+            {
+              "name": "idempotency_key",
+              "value": "={{ $json.idempotency_key }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachment",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.EMAIL_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-32",
+      "name": "Send Report Email (retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8680,
+        0
+      ],
+      "notes": "Same request as Send Report Email, for the recipients that need a second try.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const first = $('Collect Sends').first().json.results;\nconst retry = $('Prepare Send Retry').all();\nconst res = $input.all();\nconst byEmail = {};\nretry.forEach((it, k) => {\n  const r = (res[k] && res[k].json) || {};\n  const status = typeof r.statusCode === 'number' ? r.statusCode : null;\n  const ok = !r.error && status !== null && status >= 200 && status < 300;\n  byEmail[it.json.email] = { email: it.json.email, ok, retriable: false, detail: ok ? null : (r.error ? String(r.error.message || r.error).slice(0, 120) : 'HTTP ' + status) };\n});\nreturn [{ json: { results: first.map((x) => byEmail[x.email] || x) } }];"
+      },
+      "id": "g-33",
+      "name": "Merge Send Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const R = $('Resolve Recipients').first().json;\nconst results = $input.first().json.results || [];\nconst delivered_now = results.filter((x) => x.ok).map((x) => x.email);\nconst failed = results.filter((x) => !x.ok);\nconst delivered = [...R.already_delivered, ...delivered_now];\nconst status = failed.length ? 'partial_failure' : 'sent';\nconst detail = failed.length ? failed.map((f) => `${f.email}: ${f.detail}`).join('; ').slice(0, 500) : null;\nreturn [{ json: { status, delivered, failed: failed.map((f) => f.email), failed_detail: detail, delivered_now: delivered_now.length, sent_at: new Date().toISOString() } }];"
+      },
+      "id": "g-34",
+      "name": "Build Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.REPORT_STORE_API_URL.replace(/\\/+$/, '') + '/reports/' + encodeURIComponent($('Plan Run').first().json.run_id) + '/complete' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: $json.status, delivered: $json.delivered, failed: $json.failed, sent_at: $json.sent_at, archive_url: $('Check Archive').first().json.archive_url, detail: $json.failed_detail } }}"
+      },
+      "id": "g-35",
+      "name": "Record Outcome",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9520,
+        0
+      ],
+      "notes": "POST /reports/{run_id}/complete {status: sent|partial_failure|failed, delivered[], failed[], sent_at, archive_url, detail}. Only now is the run remembered as done. Retried 3 times.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 500
+    },
+    {
+      "parameters": {
+        "jsCode": "const Pl = $('Plan Run').first().json;\nconst Cs = $('Data OK?').first().json;\nconst Ar = $('Check Archive').first().json;\nconst R = $('Resolve Recipients').first().json;\nconst O = $('Build Outcome').first().json;\nconst rec = $input.first().json;\nconst recorded = !rec.error && typeof rec.statusCode === 'number' && rec.statusCode >= 200 && rec.statusCode < 300;\nconst warnings = [], notes = [];\nconst t = (s) => notes.push({ text: s });\nif (!Ar.archived) { warnings.push('archive_failed'); t(`Run ${Pl.run_id}: report generated and emailed, but ARCHIVING FAILED (${Ar.archive_detail}). Save a copy manually.`); }\nif (R.recipient_source === 'fallback') { warnings.push('fallback_recipient_used'); t(`Run ${Pl.run_id}: subscriber list unavailable or empty - sent to the fallback recipient only.`); }\nif (R.skipped_invalid.length) { warnings.push('invalid_recipients_skipped'); t(`Run ${Pl.run_id}: skipped ${R.skipped_invalid.length} invalid subscriber address(es): ${R.skipped_invalid.join(', ')}`); }\nif (Cs.missing_sections.length) t(`Run ${Pl.run_id}: report sent INCOMPLETE - unavailable sources: ${Cs.missing_sections.join(', ')}.`);\nif (O.failed.length) t(`Run ${Pl.run_id}: ${O.failed.length}/${R.all.length} deliveries failed - ${O.failed_detail}. Re-run the same period (without force) to retry only those.`);\nif (!recorded) { warnings.push('status_not_recorded'); t(`Run ${Pl.run_id}: the run finished (${O.status}) but the report store did not record it. A re-run will resume once the claim expires; the mail service must drop duplicate idempotency keys.`); }\nconst allFailed = R.to_send.length > 0 && O.delivered_now === 0;\nconst body = { status: O.status, run_id: Pl.run_id, period_start: Pl.period_start, period_end: Pl.period_end, total: R.all.length, sent: O.delivered_now, already_delivered: R.already_delivered.length,\n  failed_count: O.failed.length, failed_recipients: O.failed, missing_sections: Cs.missing_sections, archive_url: Ar.archive_url };\nif (warnings.length) body.warnings = warnings;\nif (allFailed) body.error = 'delivery_failed';\nreturn [{ json: { triggered_by: Pl.triggered_by, http_status: allFailed ? 502 : 200, response_body: body, notifications: notes } }];"
+      },
+      "id": "g-36",
+      "name": "Finalize Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9800,
+        0
+      ],
+      "notes": "Builds the final reply: status, counts, who failed, missing sections, archive link, warnings. Each problem also becomes one Slack message."
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $input.first().json.fail;\nconst Pl = $('Plan Run').first().json;\nreturn [{ json: { fail: f, run_id: Pl.run_id } }];"
+      },
+      "id": "g-37",
+      "name": "Fail Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7000,
+        150
+      ],
+      "notes": "Common exit for \"no data\", \"PDF failed\", \"no recipients\": releases the claim so a re-run is allowed."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.REPORT_STORE_API_URL.replace(/\\/+$/, '') + '/reports/' + encodeURIComponent($('Plan Run').first().json.run_id) + '/complete' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: 'failed', delivered: $('Claim Verdict').first().json.delivered_before, failed: [], detail: $json.fail.detail } }}"
+      },
+      "id": "g-38",
+      "name": "Release Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7280,
+        150
+      ],
+      "notes": "Records the run as failed. A failed run can be claimed again, so fixing the problem and re-running just works (nothing was sent, so nothing is duplicated).",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 500
+    },
+    {
+      "parameters": {
+        "jsCode": "const Pl = $('Plan Run').first().json;\nconst F = $('Fail Run').first().json.fail;\nconst rel = $input.first().json;\nconst released = !rel.error && typeof rel.statusCode === 'number' && rel.statusCode >= 200 && rel.statusCode < 300;\nconst notes = [{ text: `Run ${Pl.run_id} FAILED (${F.status}): ${F.detail}. Nothing was sent.` + (released ? ' Fix the cause and re-run the same period.' : ' The report store did not accept the release; the claim will expire on its own.') }];\nconst body = { status: F.status, run_id: Pl.run_id, detail: F.detail, retry: true };\nif (!released) body.warnings = ['claim_not_released'];\nreturn [{ json: { triggered_by: Pl.triggered_by, http_status: F.http_status, response_body: body, notifications: notes } }];"
+      },
+      "id": "g-39",
+      "name": "Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7560,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-40",
+              "leftValue": "={{ $json.triggered_by === 'manual' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-40",
+      "name": "Is Manual?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        10080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-41",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        10360,
+        0
+      ],
+      "notes": "The single reply node. Only manual / backfill runs reach it; a scheduled run has no caller, so it ends quietly (problems still alert)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst list = $input.first().json.notifications || [];\nif (!C.SLACK_WEBHOOK_URL) return [];\nreturn list.map((n) => ({ json: { text: '[Report] ' + n.text } }));"
+      },
+      "id": "g-42",
+      "name": "Expand Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10640,
+        0
+      ],
+      "notes": "Runs AFTER the reply (or at the end of a scheduled run). Returns nothing when there is nothing to say or no Slack webhook is configured."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-43",
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10920,
+        0
+      ],
+      "notes": "Slack-compatible incoming webhook. Failure is ignored on purpose.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Scheduled Report Pipeline\n**Setup (about 10 minutes)**\n1. Run the backing services (a reference implementation is included: `node 06-scheduled-report-pipeline-mock-server.js`, port 4600): data sources, report store, subscriber list, mail sender, plus a Gotenberg (`docker run -p 3000:3000 gotenberg/gotenberg:8`) for real PDFs. The mock includes a Gotenberg stand-in.\n2. Open **CONFIG**: edit `DATA_SOURCES_JSON` (your data sources: name, label, url, optional headers / required / timeout), the service URLs, `FALLBACK_RECIPIENT_EMAIL`, optional `SLACK_WEBHOOK_URL` and `REPORT_AUTH_TOKEN`.\n3. Check the **Weekly Schedule** node (Mondays 08:00 in the instance time zone), then activate.\n4. Backfill / re-run: `POST /webhook/reports/generate` with `{\"period_start\":\"2026-09-21\",\"period_end\":\"2026-09-27\"}` (add `\"force\":true` to resend a period that was already sent).\n\n**Each run:** claim the period (atomic) -> fetch sources -> render HTML -> PDF -> archive -> resolve recipients -> email each one -> record the outcome -> reply -> alert.",
+        "height": 380,
+        "width": 760,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -560
+      ]
+    }
+  ],
+  "connections": {
+    "Weekly Schedule": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual / Backfill Webhook": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Report Layout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Layout": {
+      "main": [
+        [
+          {
+            "node": "Plan Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Run": {
+      "main": [
+        [
+          {
+            "node": "Plan OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan OK?": {
+      "main": [
+        [
+          {
+            "node": "Claim Run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Run": {
+      "main": [
+        [
+          {
+            "node": "Claim Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Verdict": {
+      "main": [
+        [
+          {
+            "node": "Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Build Source Requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Source Requests": {
+      "main": [
+        [
+          {
+            "node": "Fetch Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Source": {
+      "main": [
+        [
+          {
+            "node": "Collect Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Sources": {
+      "main": [
+        [
+          {
+            "node": "Retry Sources?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Sources?": {
+      "main": [
+        [
+          {
+            "node": "Build Source Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Data OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Source Retry": {
+      "main": [
+        [
+          {
+            "node": "Fetch Source (retry)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Source (retry)": {
+      "main": [
+        [
+          {
+            "node": "Merge Source Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Source Retry": {
+      "main": [
+        [
+          {
+            "node": "Data OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data OK?": {
+      "main": [
+        [
+          {
+            "node": "Render Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fail Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Report": {
+      "main": [
+        [
+          {
+            "node": "Render PDF (Gotenberg)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render PDF (Gotenberg)": {
+      "main": [
+        [
+          {
+            "node": "Check PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check PDF": {
+      "main": [
+        [
+          {
+            "node": "PDF OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF OK?": {
+      "main": [
+        [
+          {
+            "node": "Archive PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fail Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive PDF": {
+      "main": [
+        [
+          {
+            "node": "Check Archive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Archive": {
+      "main": [
+        [
+          {
+            "node": "Fetch Subscribers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Subscribers": {
+      "main": [
+        [
+          {
+            "node": "Resolve Recipients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Recipients": {
+      "main": [
+        [
+          {
+            "node": "Recipients OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recipients OK?": {
+      "main": [
+        [
+          {
+            "node": "Anything To Send?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fail Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything To Send?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Emails": {
+      "main": [
+        [
+          {
+            "node": "Send Report Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Report Email": {
+      "main": [
+        [
+          {
+            "node": "Collect Sends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Sends": {
+      "main": [
+        [
+          {
+            "node": "Retry Sends?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Sends?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Send Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Send Retry": {
+      "main": [
+        [
+          {
+            "node": "Send Report Email (retry)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Report Email (retry)": {
+      "main": [
+        [
+          {
+            "node": "Merge Send Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Send Retry": {
+      "main": [
+        [
+          {
+            "node": "Build Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Outcome": {
+      "main": [
+        [
+          {
+            "node": "Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Outcome": {
+      "main": [
+        [
+          {
+            "node": "Finalize Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Run": {
+      "main": [
+        [
+          {
+            "node": "Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fail Run": {
+      "main": [
+        [
+          {
+            "node": "Release Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Run": {
+      "main": [
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure Response": {
+      "main": [
+        [
+          {
+            "node": "Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Manual?": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Notifications": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

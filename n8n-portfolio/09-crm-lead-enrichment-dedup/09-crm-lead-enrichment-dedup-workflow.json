@@ -1,0 +1,1455 @@
+{
+  "name": "CRM Lead Enrichment & Dedup",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leads/intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-0",
+      "name": "Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "POST {email, first_name, last_name, company, title?, phone?, linkedin_url?, source?, lead_id?}. Replies from one Respond node at the end of every path.",
+      "webhookId": "lead-intake"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "LEAD_STORE_API_URL",
+              "value": "http://localhost:4300",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "ENRICHMENT_API_URL",
+              "value": "http://localhost:4300",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "CRM_API_URL",
+              "value": "http://localhost:4300",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "ENRICHMENT_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "INTAKE_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-7",
+              "name": "ENRICHMENT_ENABLED",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-8",
+              "name": "AUTO_MERGE_THRESHOLD",
+              "value": 0.85,
+              "type": "number"
+            },
+            {
+              "id": "cfg-9",
+              "name": "AUTO_MERGE_FUZZY",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-10",
+              "name": "REVIEW_THRESHOLD",
+              "value": 0.6,
+              "type": "number"
+            },
+            {
+              "id": "cfg-11",
+              "name": "NAME_WEIGHT",
+              "value": 0.6,
+              "type": "number"
+            },
+            {
+              "id": "cfg-12",
+              "name": "COMPANY_WEIGHT",
+              "value": 0.4,
+              "type": "number"
+            },
+            {
+              "id": "cfg-13",
+              "name": "NICKNAMES_JSON",
+              "value": "{\"bob\": \"robert\", \"rob\": \"robert\", \"bobby\": \"robert\", \"bill\": \"william\", \"billy\": \"william\", \"liz\": \"elizabeth\", \"beth\": \"elizabeth\", \"jim\": \"james\", \"jimmy\": \"james\", \"mike\": \"michael\", \"dave\": \"david\", \"tom\": \"thomas\", \"tony\": \"anthony\", \"rick\": \"richard\", \"dick\": \"richard\", \"chris\": \"christopher\", \"kate\": \"katherine\", \"katie\": \"katherine\", \"kathy\": \"katherine\", \"steve\": \"stephen\", \"jen\": \"jennifer\", \"jenny\": \"jennifer\", \"matt\": \"matthew\", \"joe\": \"joseph\", \"dan\": \"daniel\", \"andy\": \"andrew\", \"sam\": \"samuel\", \"ben\": \"benjamin\", \"nick\": \"nicholas\"}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-14",
+              "name": "SEARCH_FAILURE_MODE",
+              "value": "flag",
+              "type": "string"
+            },
+            {
+              "id": "cfg-15",
+              "name": "PROCESSING_TTL_SECONDS",
+              "value": 120,
+              "type": "number"
+            },
+            {
+              "id": "cfg-16",
+              "name": "IDEMPOTENCY_TTL_SECONDS",
+              "value": 86400,
+              "type": "number"
+            },
+            {
+              "id": "cfg-17",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-18",
+              "name": "ENRICHMENT_TIMEOUT_MS",
+              "value": 20000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. Service URLs, auth, thresholds, weights, nicknames, TTLs. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// LEAD RULES: the node for what THIS business accepts and how names are matched. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. Every lead is checked against it, and a mistake gives a\n// clear 500 (intake_misconfigured, lines start \"Rules:\") before anything is claimed or written.\n// What you cannot change here, on purpose: the base required fields, exact-email matching, the\n// scoring maths and thresholds (CONFIG), \"never overwrite a filled CRM field\", the claim/replay logic.\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst rules = {\n  // Email domains you refuse outright (the caller gets 422 lead_rejected and nothing is stored).\n  blocked_email_domains: [],\n  // Email domains whose NEW records are created but flagged for a human (needs_review, reason \"review_domain\").\n  review_email_domains: [],\n  // Request fields that must be present as well as the basics: title, phone, linkedin_url (400 if missing).\n  require: [],\n  // Extra request fields to pass to the CRM (text up to 300 characters). They are saved on new\n  // records, and on a merge they only fill an EMPTY CRM field; a different value is reported as a conflict.\n  custom_fields: [],\n  // Words ignored at the end of company names, added to the built-in list (inc, llc, ltd, gmbh ...).\n  company_suffixes: [],\n  // Nickname -> formal first name, added to CONFIG.NICKNAMES_JSON (these win).\n  nicknames: {},\n  // How a lead is compared with CRM contacts. (The thresholds and the name/company weights stay in CONFIG.)\n  matching: {\n    // Titles ignored in front of a first name, added to the built-in dr mr mrs ms miss mx prof.\n    name_prefixes: [],\n    // Words ignored after a last name, added to the built-in jr sr ii iii iv phd md.\n    name_suffixes: [],\n    // true = also compare with the contact's first and last name swapped, and keep the better score.\n    swap_first_last: false,\n    // null = compare the whole name as one piece. { first: 0.3, last: 0.7 } = score first and last name separately, with these weights.\n    name_weights: null,\n    // Short company names -> the full name. Lower case, written as names look once \"inc\", \"ltd\" etc. are removed: { fb: 'facebook' }\n    company_aliases: {},\n    // Placeholder companies that never count as evidence of a match. Lower case, punctuation as spaces (\"n/a\" is 'n a').\n    unknown_companies: [],\n  },\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst rawM = rules && rules.matching !== undefined && rules.matching !== null ? rules.matching : {};\nconst mObj = rawM !== null && typeof rawM === 'object' && !Array.isArray(rawM);\nconst matching = { name_prefixes: pick(rawM, 'name_prefixes', []), name_suffixes: pick(rawM, 'name_suffixes', []), swap_first_last: pick(rawM, 'swap_first_last', false), name_weights: pick(rawM, 'name_weights', null),\n  company_aliases: pick(rawM, 'company_aliases', {}), unknown_companies: pick(rawM, 'unknown_companies', []), _is_obj: mObj, _raw_keys: mObj ? Object.keys(rawM) : [] };\nconst norm = { blocked_email_domains: pick(rules, 'blocked_email_domains', []), review_email_domains: pick(rules, 'review_email_domains', []), require: pick(rules, 'require', []),\n  custom_fields: pick(rules, 'custom_fields', []), company_suffixes: pick(rules, 'company_suffixes', []), nicknames: pick(rules, 'nicknames', {}), matching,\n  _is_obj: rules !== null && typeof rules === 'object' && !Array.isArray(rules), _raw_keys: Object.keys(rules || {}) };\nreturn [{ json: { ...$input.first().json, rules: norm } }];\n"
+      },
+      "id": "g-2",
+      "name": "Lead Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "EDIT ME for what this business accepts: blocked and review-only email domains, extra required fields, extra fields to pass to the CRM, company suffixes and nicknames for matching. Data only; checked on every lead. The scoring, thresholds, overwrite protection and idempotency cannot be changed here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst req = $('Intake Webhook').first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: [] } }];\n\nif (C.INTAKE_AUTH_TOKEN && (req.headers || {})['x-intake-token'] !== C.INTAKE_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity: a typo here should say so, not fail three nodes later\nconst bad = [];\nfor (const k of ['LEAD_STORE_API_URL', 'ENRICHMENT_API_URL', 'CRM_API_URL']) if (!/^https?:\\/\\//.test(C[k] || '')) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.SLACK_WEBHOOK_URL && !/^https?:\\/\\//.test(C.SLACK_WEBHOOK_URL)) bad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'ENRICHMENT_HEADERS_JSON']) { try { if (!isObj(JSON.parse(C[k] || '{}'))) throw 0; } catch (e) { bad.push(`CONFIG.${k} must be a JSON object`); } }\ntry { const m = JSON.parse(C.NICKNAMES_JSON || '{}'); if (!isObj(m) || Object.values(m).some((v) => typeof v !== 'string')) throw 0; } catch (e) { bad.push('CONFIG.NICKNAMES_JSON must be a JSON object of nickname -> formal name'); }\nconst num = (k) => Number(C[k]);\nif (!(num('REVIEW_THRESHOLD') > 0 && num('REVIEW_THRESHOLD') <= num('AUTO_MERGE_THRESHOLD') && num('AUTO_MERGE_THRESHOLD') <= 1)) bad.push('CONFIG thresholds must satisfy 0 < REVIEW_THRESHOLD <= AUTO_MERGE_THRESHOLD <= 1');\nif (!(num('NAME_WEIGHT') >= 0 && num('COMPANY_WEIGHT') >= 0 && num('NAME_WEIGHT') + num('COMPANY_WEIGHT') > 0)) bad.push('CONFIG.NAME_WEIGHT and COMPANY_WEIGHT must be >= 0 and not both 0');\nif (!['flag', 'reject'].includes(C.SEARCH_FAILURE_MODE)) bad.push(\"CONFIG.SEARCH_FAILURE_MODE must be 'flag' or 'reject'\");\nfor (const k of ['PROCESSING_TTL_SECONDS', 'IDEMPOTENCY_TTL_SECONDS', 'REQUEST_TIMEOUT_MS', 'ENRICHMENT_TIMEOUT_MS']) if (!(num(k) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\n// ---- the Lead Rules node\n{\n  const R = $('Lead Rules').first().json.rules;\n  const rb = (m) => bad.push('Rules: ' + m);\n  const list = (v, max, f) => Array.isArray(v) && v.length <= max && v.every(f) && new Set(v).size === v.length;\n  const domain = (x) => typeof x === 'string' && /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?\\.[a-z]{2,}$/.test(x);\n  const RESERVED = ['id', 'external_ref', 'first_name', 'last_name', 'email', 'secondary_email', 'company', 'title', 'phone', 'linkedin_url', 'source', 'industry', 'company_size', 'needs_review', 'review_reason', 'possible_duplicate_of', 'match_score', 'company_mismatch', 'enriched_company'];\n  if (!R._is_obj) rb('rules must be an object');\n  else {\n    for (const k of R._raw_keys) if (!['blocked_email_domains', 'review_email_domains', 'require', 'custom_fields', 'company_suffixes', 'nicknames', 'matching'].includes(k)) rb(`${k} is not a known setting (blocked_email_domains, review_email_domains, require, custom_fields, company_suffixes, nicknames, matching)`);\n    for (const k of ['blocked_email_domains', 'review_email_domains']) if (!list(R[k], 200, domain)) rb(`${k} must be a list of different lower-case domains such as \"example.com\"`);\n    if (!list(R.require, 10, (x) => ['title', 'phone', 'linkedin_url'].includes(x) || (Array.isArray(R.custom_fields) && R.custom_fields.includes(x)))) rb('require must be a list of title, phone, linkedin_url or a name from custom_fields');\n    if (!list(R.custom_fields, 20, (x) => typeof x === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(x) && !RESERVED.includes(x))) rb('custom_fields must be a list of at most 20 different names (lower-case letters, digits, _), none of the built-in field names');\n    if (!list(R.company_suffixes, 100, (x) => typeof x === 'string' && /^[a-z0-9]{1,30}$/.test(x))) rb('company_suffixes must be a list of single lower-case words');\n    {\n      const M = R.matching;\n      if (!M._is_obj) rb('matching must be an object');\n      else {\n        for (const k of M._raw_keys) if (!['name_prefixes', 'name_suffixes', 'swap_first_last', 'name_weights', 'company_aliases', 'unknown_companies'].includes(k)) rb(`matching.${k} is not a known setting (name_prefixes, name_suffixes, swap_first_last, name_weights, company_aliases, unknown_companies)`);\n        for (const k of ['name_prefixes', 'name_suffixes']) if (!list(M[k], 50, (x) => typeof x === 'string' && /^[a-z]{1,20}$/.test(x))) rb(`matching.${k} must be a list of at most 50 different single lower-case words`);\n        if (typeof M.swap_first_last !== 'boolean') rb('matching.swap_first_last must be true or false');\n        const w = M.name_weights;\n        if (w !== null && !(isObj(w) && Object.keys(w).sort().join() === 'first,last' && [w.first, w.last].every((x) => typeof x === 'number' && x >= 0 && x <= 1000) && w.first + w.last > 0)) rb('matching.name_weights must be null or { first, last } with two numbers from 0 to 1000 that are not both 0');\n        const nm = (x) => typeof x === 'string' && /^[a-z0-9]+( [a-z0-9]+)*$/.test(x) && x.length <= 60;\n        const A = M.company_aliases;\n        if (!isObj(A) || Object.keys(A).length > 200 || Object.entries(A).some(([k, v]) => !nm(k) || !nm(v) || k === v || Object.prototype.hasOwnProperty.call(A, v))) rb('matching.company_aliases must be an object of at most 200 lower-case alias -> lower-case company name (letters, digits, single spaces); an alias may not map to itself or to another alias');\n        if (!list(M.unknown_companies, 50, nm)) rb('matching.unknown_companies must be a list of at most 50 different lower-case names (letters, digits, single spaces; punctuation written as a space)');\n      }\n    }\n    if (!isObj(R.nicknames) || Object.keys(R.nicknames).length > 500 || Object.entries(R.nicknames).some(([k, v]) => !/^[a-z]{1,40}$/.test(k) || typeof v !== 'string' || !/^[a-z]{1,40}$/.test(v))) rb('nicknames must be an object of lower-case nickname -> lower-case formal first name');\n  }\n}\nif (bad.length) return reject(500, 'intake_misconfigured', bad);\n\n// ---- request shape\nif (!isObj(req.body)) return reject(400, 'validation_failed', ['body must be a JSON object']);\nconst b = req.body;\nconst errors = [];\nconst reqStr = (k, max) => { const v = b[k]; if (typeof v !== 'string' || !v.trim()) { errors.push(`${k} is required and must be a non-empty string`); return null; } if (v.trim().length > max) { errors.push(`${k} must be at most ${max} characters`); return null; } return v.trim(); };\nconst optStr = (k, max) => { const v = b[k]; if (v === undefined || v === null || v === '') return null; if (typeof v !== 'string') { errors.push(`${k} must be a string`); return null; } if (v.trim().length > max) { errors.push(`${k} must be at most ${max} characters`); return null; } return v.trim() || null; };\nconst email = reqStr('email', 254);\nif (email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) errors.push('email must be a valid email address');\nconst first_name = reqStr('first_name', 100), last_name = reqStr('last_name', 100), company = reqStr('company', 200);\nconst title = optStr('title', 200), phone = optStr('phone', 50), source = optStr('source', 100) || 'unknown';\nconst linkedin_url = optStr('linkedin_url', 500);\nif (linkedin_url && !/^https?:\\/\\//i.test(linkedin_url)) errors.push('linkedin_url must start with http:// or https://');\nlet lead_id = null;\nif (b.lead_id !== undefined && b.lead_id !== null && b.lead_id !== '') {\n  if (typeof b.lead_id !== 'string' || !/^[A-Za-z0-9._:@+-]{1,254}$/.test(b.lead_id)) errors.push('lead_id must be 1-254 characters: letters, digits and . _ : @ + -');\n  else lead_id = b.lead_id;\n}\nconst RL = $('Lead Rules').first().json.rules;\nfor (const k of RL.require) if (b[k] === undefined || b[k] === null || b[k] === '') errors.push(`${k} is required`);\nconst custom = {};\nfor (const k of RL.custom_fields) {\n  const v = b[k];\n  if (v === undefined || v === null || v === '') continue;\n  if (typeof v !== 'string') errors.push(`${k} must be a string`);\n  else if (v.trim().length > 300) errors.push(`${k} must be at most 300 characters`);\n  else custom[k] = v.trim();\n}\nif (errors.length) return reject(400, 'validation_failed', errors);\nconst domainOf = email.toLowerCase().split('@').pop();\nif (RL.blocked_email_domains.includes(domainOf)) return reject(422, 'lead_rejected', [`email domain \"${domainOf}\" is not accepted`]);\n\n// Identity of a lead when the caller supplies none: the normalised email itself. (No hashing: a short hash can collide and\n// hand one person another person's cached result; the email cannot.)\nconst normEmail = email.toLowerCase();\nreturn [{ json: { ok: true, lead_id: lead_id || ('email:' + normEmail), email: normEmail, first_name, last_name, company, title, phone, linkedin_url, source, custom, review_domain: RL.review_email_domains.includes(domainOf) } }];"
+      },
+      "id": "g-3",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "Auth, CONFIG sanity and request shape are all checked here, before anything is claimed or called. Every rejection is a specific 4xx/5xx body."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-4",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-4",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.LEAD_STORE_API_URL.replace(/\\/+$/, '') + '/leads/claim' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { lead_id: $('Validate Request').first().json.lead_id, processing_ttl_seconds: $('CONFIG').first().json.PROCESSING_TTL_SECONDS } }}"
+      },
+      "id": "g-5",
+      "name": "Claim Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        0
+      ],
+      "notes": "Atomic create-or-return-existing on the lead store. 201 = you own this lead now. 409 = it already exists (processing or completed). The old workflow did GET-then-write at the very end, so two simultaneous submits both passed.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nif (!r.error && r.statusCode === 201) return [{ json: { claim: 'owned' } }];\nif (!r.error && r.statusCode === 409 && isObj(r.body) && isObj(r.body.existing)) {\n  if (r.body.existing.status === 'completed') return [{ json: { claim: 'completed', record: isObj(r.body.existing.record) ? r.body.existing.record : {} } }];\n  if (r.body.existing.status === 'processing') return [{ json: { claim: 'processing' } }];\n}\nreturn [{ json: { claim: 'unavailable', detail: r.error ? String(r.error.message || r.error).slice(0, 200) : `HTTP ${r.statusCode}` } }];"
+      },
+      "id": "g-6",
+      "name": "Interpret Claim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-7-0",
+                    "leftValue": "={{ $json.claim }}",
+                    "rightValue": "owned",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "owned"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-7-1",
+                    "leftValue": "={{ $json.claim }}",
+                    "rightValue": "completed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "completed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-7-2",
+                    "leftValue": "={{ $json.claim }}",
+                    "rightValue": "processing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "processing"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "unavailable"
+        }
+      },
+      "id": "g-7",
+      "name": "Claim Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const L = $('Validate Request').first().json;\nconst rec = $json.record || {};\nreturn [{ json: { http_status: 200, notifications: [], response_body: { status: 'already_processed', lead_id: L.lead_id, original_status: rec.status || null, crm_record_id: rec.crm_record_id || null, classification: rec.classification || null, processed_at: rec.processed_at || null } } }];"
+      },
+      "id": "g-8",
+      "name": "Build Replay Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "Same lead already completed inside the idempotency window: answer from the record. Nothing is enriched, searched or written again."
+    },
+    {
+      "parameters": {
+        "jsCode": "const L = $('Validate Request').first().json;\nreturn [{ json: { http_status: 409, notifications: [], response_body: { error: 'lead_in_progress', lead_id: L.lead_id, retry_after_seconds: 5 } } }];"
+      },
+      "id": "g-9",
+      "name": "Build In-Progress Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const L = $('Validate Request').first().json;\nreturn [{ json: { http_status: 503, notifications: [{ text: `Lead store unavailable (${$json.detail}). Lead ${L.lead_id} was NOT processed; the caller was told to retry.` }], response_body: { error: 'lead_store_unavailable', lead_id: L.lead_id, retry: true } } }];"
+      },
+      "id": "g-10",
+      "name": "Build Store Unavailable Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ],
+      "notes": "If we cannot take the claim we cannot guarantee exactly-once, so we refuse instead of risking a duplicate CRM record."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-11",
+              "leftValue": "={{ $('CONFIG').first().json.ENRICHMENT_ENABLED === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-11",
+      "name": "Enrichment Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.ENRICHMENT_API_URL.replace(/\\/+$/, '') + '/enrich-profile' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.ENRICHMENT_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.ENRICHMENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { email: $('Validate Request').first().json.email, linkedin_url: $('Validate Request').first().json.linkedin_url, first_name: $('Validate Request').first().json.first_name, last_name: $('Validate Request').first().json.last_name, company: $('Validate Request').first().json.company } }}"
+      },
+      "id": "g-12",
+      "name": "Enrich Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2520,
+        0
+      ],
+      "notes": "Best effort. onError=continue + neverError: a refused connection, a timeout and a 5xx all arrive here as data, and are all handled as \"unenriched\" below. (The old node had no onError, so an unreachable scraper killed the whole intake.)",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const RL_ = $('Lead Rules').first().json.rules, MT = RL_.matching;\nconst SUFFIX = new Set(['inc', 'incorporated', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'co', 'company', 'gmbh', 'plc', 'lp', 'llp', 'sa', 'ag', 'bv', 'pty', ...RL_.company_suffixes]);\nconst PRE = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'mx', 'prof', ...MT.name_prefixes]), POST = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'phd', 'md', ...MT.name_suffixes]);\nconst base = (s) => String(s == null ? '' : s).normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9 ]+/g, ' ').replace(/\\s+/g, ' ').trim();\nconst normCompany = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && SUFFIX.has(t[t.length - 1])) t.pop(); const k = t.join(' '); return Object.prototype.hasOwnProperty.call(MT.company_aliases, k) ? MT.company_aliases[k] : k; };\nconst UNKNOWN = new Set(MT.unknown_companies);\nconst unknownCompany = (s) => UNKNOWN.has(base(s)) || UNKNOWN.has(normCompany(s));\nconst firstOf = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && PRE.has(t[0])) t.shift(); return t[0] || ''; };\nconst lastOf = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && POST.has(t[t.length - 1])) t.pop(); return t.join(' '); };\nconst L = $('Validate Request').first().json;\nconst r = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);\nlet status = 'failed', enriched = {};\nif (!r.error && r.statusCode >= 200 && r.statusCode < 300 && isObj(r.body)) {\n  if (r.body.found === true) { status = 'success'; enriched = { title: str(r.body.title), current_company: str(r.body.current_company), company_size: str(String(r.body.company_size ?? '')), industry: str(r.body.industry) }; }\n  else if (r.body.found === false) status = 'not_found';\n} else if (!r.error && r.statusCode === 404) status = 'not_found';\nconst mismatch = !!(enriched.current_company && !unknownCompany(L.company) && !unknownCompany(enriched.current_company) && normCompany(enriched.current_company) !== normCompany(L.company));\nreturn [{ json: { enrichment_status: status, enriched, company_mismatch: mismatch } }];"
+      },
+      "id": "g-13",
+      "name": "Assess Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ],
+      "notes": "success / not_found / failed. Company names are compared without punctuation, case, accents or suffixes, so \"Acme, Inc.\" vs \"ACME\" is not a false mismatch."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { enrichment_status: 'skipped', enriched: {}, company_mismatch: false } }];"
+      },
+      "id": "g-14",
+      "name": "Skip Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One place that holds the lead plus its enrichment result. Every later node reads it by name.\nreturn [{ json: { ...$('Validate Request').first().json, ...$input.first().json } }];"
+      },
+      "id": "g-15",
+      "name": "Lead State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.CRM_API_URL.replace(/\\/+$/, '') + '/contacts/search' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $('Lead State').first().json.email }}"
+            },
+            {
+              "name": "last_name",
+              "value": "={{ $('Lead State').first().json.last_name }}"
+            },
+            {
+              "name": "company",
+              "value": "={{ $('Lead State').first().json.company }}"
+            }
+          ]
+        }
+      },
+      "id": "g-16",
+      "name": "Search CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3360,
+        0
+      ],
+      "notes": "Query values go through n8n's query-parameter encoding, so \"AT&T\" or \"pat+tag@x.com\" arrive intact (the old node concatenated them into the URL).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const RL_ = $('Lead Rules').first().json.rules, MT = RL_.matching;\nconst SUFFIX = new Set(['inc', 'incorporated', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'co', 'company', 'gmbh', 'plc', 'lp', 'llp', 'sa', 'ag', 'bv', 'pty', ...RL_.company_suffixes]);\nconst PRE = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'mx', 'prof', ...MT.name_prefixes]), POST = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'phd', 'md', ...MT.name_suffixes]);\nconst base = (s) => String(s == null ? '' : s).normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9 ]+/g, ' ').replace(/\\s+/g, ' ').trim();\nconst normCompany = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && SUFFIX.has(t[t.length - 1])) t.pop(); const k = t.join(' '); return Object.prototype.hasOwnProperty.call(MT.company_aliases, k) ? MT.company_aliases[k] : k; };\nconst UNKNOWN = new Set(MT.unknown_companies);\nconst unknownCompany = (s) => UNKNOWN.has(base(s)) || UNKNOWN.has(normCompany(s));\nconst firstOf = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && PRE.has(t[0])) t.shift(); return t[0] || ''; };\nconst lastOf = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && POST.has(t[t.length - 1])) t.pop(); return t.join(' '); };\nconst C = $('CONFIG').first().json;\nconst L = $('Lead State').first().json;\nconst r = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst nick = { ...JSON.parse(C.NICKNAMES_JSON || '{}'), ...$('Lead Rules').first().json.rules.nicknames };\n\nconst fail = () => [{ json: { search_ok: false, classification: 'search_failed', action: C.SEARCH_FAILURE_MODE === 'reject' ? 'reject' : 'create', match_score: 0, candidate: null, exact_email: false, candidate_count: 0 } }];\nif (r.error || !(r.statusCode >= 200 && r.statusCode < 300) || !isObj(r.body) || !Array.isArray(r.body.candidates)) return fail();\n\nconst lev = (a, b) => {\n  if (a === b) return 0; if (!a.length) return b.length; if (!b.length) return a.length;\n  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);\n  for (let i = 1; i <= a.length; i++) {\n    const cur = [i];\n    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));\n    prev = cur;\n  }\n  return prev[b.length];\n};\nconst sim = (a, b) => { if (!a || !b) return 0; return 1 - lev(a, b) / Math.max(a.length, b.length); };\nconst first = (s) => { const f = firstOf(s); return nick[f] || f; };\nconst nameScore = (lf, ll, cf, cl) => {\n  const a = [first(lf), lastOf(ll)], b = [first(cf), lastOf(cl)], w = MT.name_weights;\n  if (!w) return sim(a.join(' '), b.join(' '));\n  return (sim(a[0], b[0]) * w.first + sim(a[1], b[1]) * w.last) / (w.first + w.last);\n};\nconst bestName = (cand) => { let v = nameScore(L.first_name, L.last_name, cand.first_name, cand.last_name); if (MT.swap_first_last) v = Math.max(v, nameScore(L.first_name, L.last_name, cand.last_name, cand.first_name)); return v; };\nconst wN = Number(C.NAME_WEIGHT), wC = Number(C.COMPANY_WEIGHT), wSum = wN + wC;\n\nconst lcomp = normCompany(L.company), lunknown = unknownCompany(L.company);\nlet best = null, n = 0;\nfor (const cand of r.body.candidates) {\n  if (!isObj(cand) || cand.id === undefined || cand.id === null || cand.id === '') continue;   // unusable row\n  n++;\n  const emails = [cand.email, cand.secondary_email].filter((x) => typeof x === 'string').map((x) => x.trim().toLowerCase());\n  if (emails.includes(L.email)) { if (!best || !best.exact_email) best = { candidate: cand, score: 1, exact_email: true }; continue; }\n  if (best && best.exact_email) continue;\n  const cs = lunknown || unknownCompany(cand.company) ? 0 : sim(lcomp, normCompany(cand.company));   // a placeholder company is never evidence\n  const score = (bestName(cand) * wN + cs * wC) / wSum;\n  if (!best || score > best.score) best = { candidate: cand, score, exact_email: false };\n}\nlet classification = 'new_lead', action = 'create';\nif (best) {\n  if (best.exact_email) { classification = 'exact_match'; action = 'merge'; }\n  else if (C.AUTO_MERGE_FUZZY !== false && best.score >= Number(C.AUTO_MERGE_THRESHOLD)) { classification = 'high_confidence'; action = 'merge'; }\n  else if (best.score >= Number(C.REVIEW_THRESHOLD)) classification = 'possible_duplicate';\n}\nreturn [{ json: { search_ok: true, classification, action, match_score: best ? Math.round(best.score * 10000) / 10000 : 0, candidate: best ? best.candidate : null, exact_email: !!(best && best.exact_email), candidate_count: n } }];"
+      },
+      "id": "g-17",
+      "name": "Score Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        0
+      ],
+      "notes": "Exact email (primary or secondary) = certain. Otherwise name (nickname-, title- and suffix-aware, optional swap and first/last weights; 60%) + company (suffix-insensitive, aliases, placeholders count for nothing; 40%). A failed or malformed search is its own outcome: it is NOT treated as \"no candidates\"."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-18-0",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "merge",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "merge"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-18-1",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "create",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "create"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "reject"
+        }
+      },
+      "id": "g-18",
+      "name": "Route By Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        3920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const RL_ = $('Lead Rules').first().json.rules, MT = RL_.matching;\nconst SUFFIX = new Set(['inc', 'incorporated', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'co', 'company', 'gmbh', 'plc', 'lp', 'llp', 'sa', 'ag', 'bv', 'pty', ...RL_.company_suffixes]);\nconst PRE = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'mx', 'prof', ...MT.name_prefixes]), POST = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'phd', 'md', ...MT.name_suffixes]);\nconst base = (s) => String(s == null ? '' : s).normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9 ]+/g, ' ').replace(/\\s+/g, ' ').trim();\nconst normCompany = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && SUFFIX.has(t[t.length - 1])) t.pop(); const k = t.join(' '); return Object.prototype.hasOwnProperty.call(MT.company_aliases, k) ? MT.company_aliases[k] : k; };\nconst UNKNOWN = new Set(MT.unknown_companies);\nconst unknownCompany = (s) => UNKNOWN.has(base(s)) || UNKNOWN.has(normCompany(s));\nconst firstOf = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && PRE.has(t[0])) t.shift(); return t[0] || ''; };\nconst lastOf = (s) => { const t = base(s).split(' ').filter(Boolean); while (t.length > 1 && POST.has(t[t.length - 1])) t.pop(); return t.join(' '); };\nconst L = $('Lead State').first().json;\nconst S = $input.first().json;\nconst ex = S.candidate;\nconst E = L.enriched || {};\nconst incoming = { first_name: L.first_name, last_name: L.last_name, company: L.company, title: L.title || E.title || null, phone: L.phone, email: L.email, industry: E.industry || null, company_size: E.company_size || null, ...(L.custom || {}) };\nconst empty = (v) => v === undefined || v === null || String(v).trim() === '';\nconst same = (a, b, k) => (k === 'company' ? normCompany(a) === normCompany(b) : base(a) === base(b));\nconst patch = {}, conflicts = [];\nfor (const [k, v] of Object.entries(incoming)) {\n  if (empty(v)) continue;\n  if (empty(ex[k])) patch[k] = v;                                                    // fill the gap\n  else if (!['industry', 'company_size'].includes(k) && !same(ex[k], v, k)) conflicts.push({ field: k, kept: ex[k], incoming: v });   // never overwrite\n}\n// A fuzzy match with a different email: keep the new address instead of dropping it.\nif (!S.exact_email && !empty(ex.email) && !same(ex.email, L.email) && empty(ex.secondary_email)) patch.secondary_email = L.email;\nreturn [{ json: { contact_id: ex.id, patch, conflicts, has_changes: Object.keys(patch).length > 0 } }];"
+      },
+      "id": "g-19",
+      "name": "Build Merge Patch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        0
+      ],
+      "notes": "Existing non-empty CRM fields are never overwritten; only gaps are filled, and anything that disagreed is reported back in `conflicts`. Sends only the fields being filled."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-20",
+              "leftValue": "={{ $json.has_changes === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-20",
+      "name": "Anything To Fill?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CONFIG').first().json.CRM_API_URL.replace(/\\/+$/, '') + '/contacts/' + encodeURIComponent($json.contact_id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.patch }}"
+      },
+      "id": "g-21",
+      "name": "Update CRM Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4760,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { statusCode: 200, skipped: true } }];"
+      },
+      "id": "g-22",
+      "name": "No Changes Needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4760,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const L = $('Lead State').first().json;\nconst S = $('Score Candidates').first().json;\nconst P = $('Build Merge Patch').first().json;\nconst r = $input.first().json;\nconst ok = !r.error && r.statusCode >= 200 && r.statusCode < 300;\nif (ok) return [{ json: { write_ok: true, http_status: 200, review_reason: null, response_body: { status: 'merged', lead_id: L.lead_id, crm_record_id: String(P.contact_id), classification: S.classification, match_score: S.match_score, needs_review: false, fields_filled: Object.keys(P.patch), conflicts: P.conflicts, enrichment_status: L.enrichment_status, company_mismatch: L.company_mismatch } } }];\nreturn [{ json: { write_ok: false, http_status: 502, response_body: { error: 'crm_write_failed', status: 'merge_failed', lead_id: L.lead_id, detail: r.error ? 'CRM unreachable' : `CRM update failed (HTTP ${r.statusCode})`, retry: true } } }];"
+      },
+      "id": "g-23",
+      "name": "Assess Merge Write",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const L = $('Lead State').first().json;\nconst S = $input.first().json;\nconst E = L.enriched || {};\nconst review_reason = S.classification === 'possible_duplicate' ? 'possible_duplicate' : (S.classification === 'search_failed' ? 'dedup_unchecked' : (L.review_domain ? 'review_domain' : null));\nconst payload = {\n  ...(L.custom || {}),\n  external_ref: L.lead_id,\n  first_name: L.first_name, last_name: L.last_name, email: L.email, company: L.company,\n  title: L.title || E.title || null, phone: L.phone, linkedin_url: L.linkedin_url, source: L.source,\n  industry: E.industry || null, company_size: E.company_size || null,\n  needs_review: review_reason !== null, review_reason,\n  possible_duplicate_of: review_reason === 'possible_duplicate' && S.candidate ? S.candidate.id : null,\n  match_score: review_reason === 'possible_duplicate' ? S.match_score : null,\n  company_mismatch: L.company_mismatch, enriched_company: E.current_company || null\n};\nreturn [{ json: { payload } }];"
+      },
+      "id": "g-24",
+      "name": "Build Create Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        150
+      ],
+      "notes": "external_ref = lead_id lets the CRM make creates idempotent (a retry after a crash between \"created\" and \"recorded\" returns the same contact instead of a second one)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.CRM_API_URL.replace(/\\/+$/, '') + '/contacts' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.payload }}"
+      },
+      "id": "g-25",
+      "name": "Create CRM Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4480,
+        150
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const L = $('Lead State').first().json;\nconst S = $('Score Candidates').first().json;\nconst P = $('Build Create Payload').first().json.payload;\nconst r = $input.first().json;\nconst id = r.body && (r.body.id ?? null);\nconst ok = !r.error && r.statusCode >= 200 && r.statusCode < 300 && id !== null && id !== undefined && id !== '';\nif (ok) return [{ json: { write_ok: true, http_status: 201, review_reason: P.review_reason, response_body: { status: 'created', lead_id: L.lead_id, crm_record_id: String(id), classification: S.classification, match_score: S.match_score, needs_review: P.needs_review, review_reason: P.review_reason, possible_duplicate_of: P.possible_duplicate_of, enrichment_status: L.enrichment_status, company_mismatch: L.company_mismatch } } }];\nreturn [{ json: { write_ok: false, http_status: 502, response_body: { error: 'crm_write_failed', status: 'create_failed', lead_id: L.lead_id, detail: r.error ? 'CRM unreachable' : (r.statusCode >= 200 && r.statusCode < 300 ? 'CRM response had no id' : `CRM create failed (HTTP ${r.statusCode})`), retry: true } } }];"
+      },
+      "id": "g-26",
+      "name": "Assess Create Write",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const L = $('Lead State').first().json;\nreturn [{ json: { write_ok: false, http_status: 503, response_body: { error: 'crm_search_failed', lead_id: L.lead_id, detail: 'could not check the CRM for duplicates; nothing was written', retry: true } } }];"
+      },
+      "id": "g-27",
+      "name": "Build Search Reject Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        300
+      ],
+      "notes": "SEARCH_FAILURE_MODE=reject: if the duplicate check can't run, write nothing and tell the caller to retry. (Default 'flag' creates the record marked needs_review so the lead isn't lost.)"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $input.first().json }];"
+      },
+      "id": "g-28",
+      "name": "Collect Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5320,
+        0
+      ],
+      "notes": "Every way the write can end lands here, then the same tail runs: record or release the claim, build the reply and notifications, respond."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-29",
+              "leftValue": "={{ $json.write_ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-29",
+      "name": "Write Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.LEAD_STORE_API_URL.replace(/\\/+$/, '') + '/leads/' + encodeURIComponent($('Validate Request').first().json.lead_id) + '/complete' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { record: { status: $('Collect Outcome').first().json.response_body.status, crm_record_id: $('Collect Outcome').first().json.response_body.crm_record_id, classification: $('Collect Outcome').first().json.response_body.classification, processed_at: new Date().toISOString() }, ttl_seconds: $('CONFIG').first().json.IDEMPOTENCY_TTL_SECONDS } }}"
+      },
+      "id": "g-30",
+      "name": "Mark Lead Completed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5880,
+        0
+      ],
+      "notes": "Only a SUCCESSFUL write is remembered. The old workflow recorded failures too, so a failed lead replayed \"processed\" forever and was never retried.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.LEAD_STORE_API_URL.replace(/\\/+$/, '') + '/leads/' + encodeURIComponent($('Validate Request').first().json.lead_id) + '/release' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ {} }}"
+      },
+      "id": "g-31",
+      "name": "Release Lead Claim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5880,
+        150
+      ],
+      "notes": "A failed attempt gives the claim back, so the caller's retry is processed instead of being told \"already processed\" or \"in progress\".",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const o = $('Collect Outcome').first().json;\nconst L = $('Lead State').first().json;\nconst C = $('CONFIG').first().json;\nconst r = $input.first().json;\nconst storeOk = !r.error && r.statusCode >= 200 && r.statusCode < 300;\nconst body = { ...o.response_body };\nconst notes = [];\nconst id = L.lead_id;\nif (o.write_ok) {\n  if (!storeOk) { body.warnings = ['idempotency_record_not_saved']; notes.push(`Lead ${id} was written to the CRM (${body.crm_record_id}) but the lead store would not record it. A resubmit inside the window may create a duplicate; check the CRM.`); }\n  if (body.needs_review && o.review_reason === 'possible_duplicate') notes.push(`Lead ${id} (CRM ${body.crm_record_id}) flagged as a possible duplicate of ${body.possible_duplicate_of}, similarity ${body.match_score}. Needs a human decision.`);\n  if (body.needs_review && o.review_reason === 'dedup_unchecked') notes.push(`The CRM duplicate search failed, so lead ${id} (CRM ${body.crm_record_id}) was created flagged \"dedup_unchecked\". Please check it for duplicates.`);\n  if (body.needs_review && o.review_reason === 'review_domain') notes.push(`Lead ${id} (CRM ${body.crm_record_id}) created flagged \"review_domain\": its email domain is on the review list.`);\n  if (L.company_mismatch) notes.push(`Lead ${id}: submitted company \"${L.company}\" differs from the enriched current company \"${L.enriched.current_company}\". Possible job change; review recommended.`);\n} else {\n  notes.push(`Lead ${id}: ${body.error === 'crm_search_failed' ? 'CRM duplicate search failed, lead NOT created' : 'CRM write failed'} (${body.detail}). The caller was told to retry.`);\n  if (!storeOk) notes.push(`Lead ${id}: could not release the lead-store claim; it will free itself after ${C.PROCESSING_TTL_SECONDS}s.`);\n}\nreturn [{ json: { http_status: o.http_status, response_body: body, notifications: notes.map((text) => ({ text })) } }];"
+      },
+      "id": "g-32",
+      "name": "Finalize Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-33",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        6440,
+        0
+      ],
+      "notes": "The single reply node. Every path (rejections, replays, failures, successes) builds {http_status, response_body} and ends here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst list = $input.first().json.notifications || [];\nif (!C.SLACK_WEBHOOK_URL) return [];\nreturn list.map((n) => ({ json: { text: '[Lead intake] ' + n.text } }));"
+      },
+      "id": "g-34",
+      "name": "Expand Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        0
+      ],
+      "notes": "Runs AFTER the reply, so a slow or dead Slack never delays or changes the response. Returns nothing (path ends) when there is nothing to send or no webhook is configured."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-35",
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7000,
+        0
+      ],
+      "notes": "Slack-compatible incoming webhook. Failure is ignored on purpose.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## CRM Lead Enrichment & Dedup\n**Setup (about 10 minutes)**\n1. Run the three backing services (a reference implementation is included: `node 09-crm-lead-enrichment-dedup-mock-server.js`, port 4300): a lead store, an enrichment API, a CRM.\n2. Open **CONFIG**: set `LEAD_STORE_API_URL`, `ENRICHMENT_API_URL`, `CRM_API_URL`, optionally `SLACK_WEBHOOK_URL` and `INTAKE_AUTH_TOKEN`.\n3. Activate, then `POST /webhook/leads/intake` with `{email, first_name, last_name, company}`.\n\n**Each lead:** validate -> claim (atomic) -> enrich (best effort) -> search CRM -> score -> merge / create / flag -> record or release the claim -> reply -> notify.\n\nServices are plain HTTP contracts, so any CRM or lead store works if it speaks them (see the README).",
+        "height": 330,
+        "width": 640,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -520
+      ]
+    }
+  ],
+  "connections": {
+    "Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Lead Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Rules": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Claim Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Lead": {
+      "main": [
+        [
+          {
+            "node": "Interpret Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpret Claim": {
+      "main": [
+        [
+          {
+            "node": "Claim Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Route": {
+      "main": [
+        [
+          {
+            "node": "Enrichment Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Replay Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build In-Progress Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Store Unavailable Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Replay Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build In-Progress Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Store Unavailable Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrichment Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Enrich Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Lead": {
+      "main": [
+        [
+          {
+            "node": "Assess Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assess Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Lead State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Lead State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead State": {
+      "main": [
+        [
+          {
+            "node": "Search CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search CRM": {
+      "main": [
+        [
+          {
+            "node": "Score Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Candidates": {
+      "main": [
+        [
+          {
+            "node": "Route By Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By Action": {
+      "main": [
+        [
+          {
+            "node": "Build Merge Patch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Create Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Search Reject Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Merge Patch": {
+      "main": [
+        [
+          {
+            "node": "Anything To Fill?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything To Fill?": {
+      "main": [
+        [
+          {
+            "node": "Update CRM Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Changes Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update CRM Contact": {
+      "main": [
+        [
+          {
+            "node": "Assess Merge Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Changes Needed": {
+      "main": [
+        [
+          {
+            "node": "Assess Merge Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Create Payload": {
+      "main": [
+        [
+          {
+            "node": "Create CRM Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create CRM Contact": {
+      "main": [
+        [
+          {
+            "node": "Assess Create Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assess Merge Write": {
+      "main": [
+        [
+          {
+            "node": "Collect Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assess Create Write": {
+      "main": [
+        [
+          {
+            "node": "Collect Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Search Reject Outcome": {
+      "main": [
+        [
+          {
+            "node": "Collect Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Outcome": {
+      "main": [
+        [
+          {
+            "node": "Write Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Mark Lead Completed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Release Lead Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Lead Completed": {
+      "main": [
+        [
+          {
+            "node": "Finalize Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Lead Claim": {
+      "main": [
+        [
+          {
+            "node": "Finalize Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Notifications": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -1,5 +1,5 @@
 {
-  "name": "12 - Rate-Limited API Integration with Circuit Breaker",
+  "name": "Rate-Limited API Gateway with Circuit Breaker",
   "nodes": [
     {
       "parameters": {
@@ -16,19 +16,19 @@
         -3600,
         -500
       ],
-      "notes": "{ integration, resource_path, params?, cache_key, max_staleness_seconds? }. A generic front door other workflows call instead of hitting a rate-limited third-party API directly -- this is where the rate limiting, breaker, and degrade logic live, once, instead of copy-pasted into every caller.",
+      "notes": "POST { integration, resource_path, params?, cache_key, max_staleness_seconds? }. A front door your other workflows call instead of hitting a rate-limited API directly. Rate limiting, circuit breaking and graceful degradation live here, once.",
       "webhookId": "gateway-fetch-webhook"
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || {};\nconst errors = [];\nif (!body.integration) errors.push('integration is required');\nif (!body.resource_path) errors.push('resource_path is required');\nif (!body.cache_key) errors.push('cache_key is required');\nreturn [{ json: { valid: errors.length === 0, errors,\n  integration: body.integration, resource_path: body.resource_path, params: body.params || {},\n  cache_key: body.cache_key, max_staleness_seconds: body.max_staleness_seconds ?? null } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst req = $json;\nconst body = req.body || {};\nconst fail = (status, errors) => [{ json: { valid: false, http_status: status, errors } }];\n\n// 1. Optional shared-secret check (blank GATEWAY_AUTH_TOKEN = open gateway)\nif (C.GATEWAY_AUTH_TOKEN && (req.headers || {})['x-gateway-token'] !== C.GATEWAY_AUTH_TOKEN) {\n  return fail(401, ['unauthorized']);\n}\n\n// 2. CONFIG sanity (a broken config should say so, not fail mysteriously)\nlet providers;\ntry { providers = JSON.parse(C.PROVIDERS_JSON); } catch (err) { return fail(500, ['CONFIG.PROVIDERS_JSON is not valid JSON']); }\ntry { JSON.parse(C.STATE_API_HEADERS_JSON || '{}'); } catch (err) { return fail(500, ['CONFIG.STATE_API_HEADERS_JSON is not valid JSON']); }\nfor (const k of ['BREAKER_API_URL', 'RATE_LIMIT_API_URL', 'CACHE_API_URL']) {\n  if (!/^https?:\\/\\//.test(C[k] || '')) return fail(500, [`CONFIG.${k} must start with http:// or https://`]);\n}\n\n// 2b. Gateway Rules sanity (a mistake in the rules node says so, before anything is called)\nconst R = $('Gateway Rules').first().json.rules;\n{\n  const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);\n  const rb = [];\n  const add = (m) => rb.push('Rules: ' + m);\n  const KNOWN = ['allowed_path_prefixes', 'allowed_params', 'blocked_params', 'max_staleness_seconds', 'remove_fields', 'use_cache', 'max_attempts', 'failure_threshold', 'cooldown_seconds'];\n  const list = (x, max, f) => Array.isArray(x) && x.length <= max && x.every(f) && new Set(x).size === x.length;\n  const checkEntry = (label, en) => {\n    if (!isObj(en)) { add(`${label} must be an object`); return; }\n    for (const k of Object.keys(en)) if (!KNOWN.includes(k)) add(`${label}.${k} is not a known setting (${KNOWN.join(', ')})`);\n    if (en.allowed_path_prefixes !== undefined && !list(en.allowed_path_prefixes, 50, (x) => typeof x === 'string' && /^[A-Za-z0-9_.\\/-]{1,200}$/.test(x) && !/\\.\\.|^\\//.test(x))) add(`${label}.allowed_path_prefixes must be a list of at most 50 different path starts such as \"items/\" (no leading slash, no \"..\")`);\n    for (const k of ['allowed_params', 'blocked_params']) if (en[k] !== undefined && !list(en[k], 50, (x) => typeof x === 'string' && /^[A-Za-z0-9_.\\[\\]-]{1,64}$/.test(x))) add(`${label}.${k} must be a list of at most 50 different parameter names`);\n    if (en.max_staleness_seconds !== undefined && !(typeof en.max_staleness_seconds === 'number' && en.max_staleness_seconds >= 0 && en.max_staleness_seconds <= 1e7)) add(`${label}.max_staleness_seconds must be a number from 0 to 10000000`);\n    if (en.remove_fields !== undefined && !list(en.remove_fields, 50, (x) => typeof x === 'string' && /^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+){0,3}$/.test(x) && !/(^|\\.)(__proto__|constructor|prototype)(\\.|$)/.test(x))) add(`${label}.remove_fields must be a list of at most 50 different dotted field paths such as \"user.ssn\"`);\n    if (en.use_cache !== undefined && typeof en.use_cache !== 'boolean') add(`${label}.use_cache must be true or false`);\n    if (en.max_attempts !== undefined && !(Number.isInteger(en.max_attempts) && en.max_attempts >= 1 && en.max_attempts <= Number(C.MAX_ATTEMPTS))) add(`${label}.max_attempts must be a whole number from 1 to CONFIG.MAX_ATTEMPTS (${C.MAX_ATTEMPTS})`);\n    if (en.failure_threshold !== undefined && !(Number.isInteger(en.failure_threshold) && en.failure_threshold >= 1 && en.failure_threshold <= Number(C.FAILURE_THRESHOLD))) add(`${label}.failure_threshold must be a whole number from 1 to CONFIG.FAILURE_THRESHOLD (${C.FAILURE_THRESHOLD})`);\n    if (en.cooldown_seconds !== undefined && !(typeof en.cooldown_seconds === 'number' && en.cooldown_seconds >= Number(C.COOLDOWN_SECONDS) && en.cooldown_seconds <= Number(C.MAX_COOLDOWN_SECONDS))) add(`${label}.cooldown_seconds must be a number from CONFIG.COOLDOWN_SECONDS (${C.COOLDOWN_SECONDS}) to CONFIG.MAX_COOLDOWN_SECONDS (${C.MAX_COOLDOWN_SECONDS})`);\n  };\n  if (!R._is_obj) add('rules must be an object');\n  else {\n    for (const k of R._raw_keys) if (!['defaults', 'integrations'].includes(k)) add(`${k} is not a known setting (defaults, integrations)`);\n    checkEntry('defaults', R.defaults);\n    if (!isObj(R.integrations)) add('integrations must be an object');\n    else for (const [name, en] of Object.entries(R.integrations)) {\n      if (!Object.prototype.hasOwnProperty.call(providers, name)) add(`integrations.${name} is not defined in CONFIG.PROVIDERS_JSON`);\n      checkEntry(`integrations.${name}`, en);\n    }\n  }\n  if (rb.length) return fail(500, rb);\n}\n\n// 3. Request validation\nconst errors = [];\nconst integration = body.integration;\nif (typeof integration !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(integration)) {\n  errors.push('integration is required (letters, digits, - and _ only)');\n} else if (!Object.prototype.hasOwnProperty.call(providers, integration)) {\n  errors.push(`integration \"${integration}\" is not defined in CONFIG.PROVIDERS_JSON`);\n} else {\n  const p = providers[integration] || {};\n  const rl = p.rate_limit || {};\n  if (!/^https?:\\/\\//.test(p.base_url || '')) errors.push(`provider \"${integration}\" needs a base_url starting with http:// or https://`);\n  if (!(rl.capacity > 0) || !(rl.refill_per_second > 0)) errors.push(`provider \"${integration}\" needs rate_limit.capacity and rate_limit.refill_per_second (positive numbers)`);\n  if (errors.length) return fail(500, errors); // our config is wrong, not the caller\n}\n\nlet resource_path = body.resource_path;\nif (typeof resource_path !== 'string' || !resource_path.length) {\n  errors.push('resource_path is required');\n} else {\n  resource_path = resource_path.replace(/^\\/+/, '');\n  if (/\\.\\.|:\\/\\/|[?#\\\\\\s]/.test(resource_path)) errors.push('resource_path must be a plain path (no \"..\", \"://\", \"?\", \"#\", spaces or backslashes; pass query values in params)');\n}\nif (body.params !== undefined && (body.params === null || typeof body.params !== 'object' || Array.isArray(body.params))) errors.push('params must be an object');\nif (typeof body.cache_key !== 'string' || !body.cache_key.length || body.cache_key.length > 200) errors.push('cache_key is required (string, max 200 characters)');\nconst ms = body.max_staleness_seconds;\nif (ms !== undefined && ms !== null && !(typeof ms === 'number' && isFinite(ms) && ms >= 0)) errors.push('max_staleness_seconds must be a number >= 0');\nconst E = (typeof integration === 'string' && R.eff[integration]) || {};\nif (E.allowed_path_prefixes && typeof resource_path === 'string' && !E.allowed_path_prefixes.some((p) => resource_path.startsWith(p))) errors.push(`resource_path is not allowed for integration \"${integration}\" (allowed prefixes: ${E.allowed_path_prefixes.join(', ')})`);\nif (body.params && typeof body.params === 'object' && !Array.isArray(body.params)) {\n  for (const k of Object.keys(body.params)) {\n    if ((E.blocked_params || []).includes(k)) errors.push(`param \"${k}\" is not allowed for integration \"${integration}\"`);\n    else if (E.allowed_params && !E.allowed_params.includes(k)) errors.push(`param \"${k}\" is not allowed for integration \"${integration}\" (allowed: ${E.allowed_params.join(', ')})`);\n  }\n}\nif (errors.length) return fail(400, errors);\n\nreturn [{ json: { valid: true, errors: [], http_status: 200,\n  integration, resource_path, params: body.params || {},\n  cache_key: integration + '__' + body.cache_key,   // namespaced so two integrations can never collide\n  max_staleness_seconds: E.max_staleness_seconds === undefined ? (ms ?? null) : (ms == null ? E.max_staleness_seconds : Math.min(ms, E.max_staleness_seconds)) } }];"
       },
       "id": "g-validate",
       "name": "Validate Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -3380,
+        -2940,
         -500
       ]
     },
@@ -57,31 +57,14 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        -3160,
+        -2720,
         -500
       ]
     },
     {
       "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ { error: 'invalid_request', details: $json.errors } }}",
-        "options": {
-          "responseCode": 400
-        }
-      },
-      "id": "g-respond-400",
-      "name": "Respond 400 (Invalid Request)",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1,
-      "position": [
-        -2940,
-        -360
-      ]
-    },
-    {
-      "parameters": {
         "method": "GET",
-        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}",
+        "url": "={{ $('CONFIG').first().json.BREAKER_API_URL.replace(/\\/+$/, '') + '/breaker/' + encodeURIComponent($json.integration) }}",
         "options": {
           "response": {
             "response": {
@@ -89,16 +72,20 @@
               "fullResponse": true
             }
           }
-        }
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
       },
       "id": "g-breaker-get",
       "name": "Get Breaker State",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -2940,
+        -2500,
         -500
-      ]
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -111,7 +98,7 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        -2720,
+        -2280,
         -500
       ]
     },
@@ -124,7 +111,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -2500,
+        -2060,
         -500
       ],
       "notes": "'open_no_probe' means the breaker is open and its cooldown hasn't elapsed -- skip straight to degrade, don't even ask for a rate-limit token. 'open_due_probe' means it's time to test recovery with exactly one call."
@@ -204,14 +191,14 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
       "position": [
-        -2280,
+        -1840,
         -500
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}/claim-probe",
+        "url": "={{ $('CONFIG').first().json.BREAKER_API_URL.replace(/\\/+$/, '') + '/breaker/' + encodeURIComponent($json.integration) + '/claim-probe' }}",
         "options": {
           "response": {
             "response": {
@@ -221,24 +208,23 @@
           }
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "ttl_seconds",
-              "value": 10
-            }
-          ]
-        }
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ttl_seconds: $('CONFIG').first().json.PROBE_CLAIM_TTL_SECONDS }) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
       },
       "id": "g-probe-claim",
       "name": "Claim Probe Slot",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -2060,
+        -1620,
         -680
       ],
-      "notes": "Atomic compare-and-set, valid for 10s -- when the breaker just opened and several queued requests all become eligible for the same probe window, only one of them actually calls the flaky API; the rest fall straight through to degrade. Without this, 'half-open' would mean 'let everyone through at once and see what breaks', which defeats the point."
+      "notes": "Atomic compare-and-set, valid for PROBE_CLAIM_TTL_SECONDS. When the cooldown ends and several queued requests all become eligible, exactly one gets claimed:true and makes the real test call; the rest degrade. The atomicity lives in your state service -- see README.",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -251,7 +237,7 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        -1840,
+        -1400,
         -680
       ]
     },
@@ -280,7 +266,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        -1620,
+        -1180,
         -680
       ]
     },
@@ -293,14 +279,14 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -1400,
+        -960,
         -740
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.RATE_LIMIT_API_URL }}/rate-limit/{{ $json.integration }}/consume",
+        "url": "={{ $('CONFIG').first().json.RATE_LIMIT_API_URL.replace(/\\/+$/, '') + '/rate-limit/' + encodeURIComponent($json.integration) + '/consume' }}",
         "options": {
           "response": {
             "response": {
@@ -310,24 +296,23 @@
           }
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "tokens",
-              "value": 1
-            }
-          ]
-        }
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tokens: 1, capacity: JSON.parse($('CONFIG').first().json.PROVIDERS_JSON)[$json.integration].rate_limit.capacity, refill_per_second: JSON.parse($('CONFIG').first().json.PROVIDERS_JSON)[$json.integration].rate_limit.refill_per_second }) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
       },
       "id": "g-rate-consume",
       "name": "Consume Rate Limit Token",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -2060,
+        -1620,
         -420
       ],
-      "notes": "One atomic call: check-and-decrement the token bucket server-side, not a separate check-then-consume pair -- the latter is the same TOCTOU race handled the same way in workflow 11's document numbering."
+      "notes": "One atomic call: check-and-decrement the token bucket in the state service, never a separate check-then-consume pair. Bucket size comes from the provider's rate_limit settings in CONFIG.PROVIDERS_JSON.",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -340,7 +325,7 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        -1840,
+        -1400,
         -420
       ]
     },
@@ -353,7 +338,7 @@
           },
           "conditions": [
             {
-              "leftValue": "={{ ($json.statusCode >= 200 && $json.statusCode < 300) && $json.body && $json.body.allowed === true }}",
+              "leftValue": "={{ (($json.statusCode >= 200 && $json.statusCode < 300) && $json.body && $json.body.allowed === true) || ($('CONFIG').first().json.RATE_LIMIT_FAIL_OPEN === true && !($json.statusCode >= 200 && $json.statusCode < 300)) }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -369,10 +354,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        -1620,
+        -1180,
         -420
       ],
-      "notes": "This is a proactive, self-imposed rate limit (a token bucket sized to the provider's documented quota) -- not just reacting to 429s after the fact. It exists specifically to avoid ever hitting the provider's real limit in the first place."
+      "notes": "A proactive, self-imposed limit sized to the provider's quota, so you rarely hit the real 429. If the rate-limit service itself is unreachable, RATE_LIMIT_FAIL_OPEN decides: true = let the call through, false = degrade."
     },
     {
       "parameters": {
@@ -383,20 +368,20 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -1400,
+        -960,
         -420
       ]
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nconst body = (t.statusCode >= 200 && t.statusCode < 300) ? (t.body || {}) : {};\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds,\n  degrade_reason: 'rate_limit_exhausted', retry_after_seconds: body.retry_after_seconds || 30 } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $json;\nconst body = (t.statusCode >= 200 && t.statusCode < 300) ? (t.body || {}) : {};\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds,\n  degrade_reason: 'rate_limit_exhausted', retry_after_seconds: body.retry_after_seconds || C.DEGRADE_RETRY_AFTER_SECONDS } }];"
       },
       "id": "g-rate-no-token",
       "name": "Mark Degrade: No Token Available",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -1400,
+        -960,
         -280
       ]
     },
@@ -409,27 +394,27 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -2060,
+        -1620,
         -180
       ]
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: 'probe_in_progress', retry_after_seconds: 10 } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: 'probe_in_progress', retry_after_seconds: C.PROBE_IN_PROGRESS_RETRY_AFTER_SECONDS } }];"
       },
       "id": "g-probe-lost-degrade",
       "name": "Mark Degrade: Probe Slot Taken",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -1400,
+        -960,
         -600
       ]
     },
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $env[$json.integration.toUpperCase() + '_API_URL'] }}/{{ $json.resource_path }}",
+        "url": "={{ JSON.parse($('CONFIG').first().json.PROVIDERS_JSON)[$json.integration].base_url.replace(/\\/+$/, '') + '/' + $json.resource_path }}",
         "sendQuery": true,
         "specifyQuery": "json",
         "jsonQuery": "={{ JSON.stringify($json.params) }}",
@@ -439,18 +424,22 @@
               "neverError": true,
               "fullResponse": true
             }
-          }
-        }
+          },
+          "timeout": "={{ $('CONFIG').first().json.PROVIDER_TIMEOUT_MS }}"
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify(JSON.parse($('CONFIG').first().json.PROVIDERS_JSON)[$json.integration].headers || {}) }}"
       },
       "id": "g-call-api",
       "name": "Call Provider API",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -1180,
+        -740,
         -500
       ],
-      "notes": "onError:'continueErrorOutput' is deliberate and distinct from neverError: neverError only suppresses throwing on a non-2xx HTTP status (which still lands on the normal output as a readable statusCode) -- it does nothing for a connection-level failure (DNS, refused, timeout) that never got an HTTP response at all. Those land on this node's separate error output instead, and are classified the same as a 5xx below rather than silently halting the workflow.",
+      "notes": "Provider URL, auth headers and timeout come from CONFIG.PROVIDERS_JSON / PROVIDER_TIMEOUT_MS. onError 'continueErrorOutput' is deliberate and different from neverError: neverError keeps non-2xx HTTP statuses on the normal output; it does nothing for connection-level failures (DNS, refused, timeout), which never produce an HTTP response. Those go to this node's error output and are treated like a 5xx.",
       "onError": "continueErrorOutput"
     },
     {
@@ -464,7 +453,7 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        -960,
+        -520,
         -540
       ]
     },
@@ -477,7 +466,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -960,
+        -520,
         -260
       ]
     },
@@ -490,7 +479,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -740,
+        -300,
         -500
       ],
       "notes": "429 is kept distinct from a generic 5xx on purpose: it means 'you're fine, just slow down,' not 'something is broken.' It's handled with Retry-After-aware backoff and doesn't count toward the circuit breaker's failure threshold the way a real server error does."
@@ -590,14 +579,14 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
       "position": [
-        -520,
+        -80,
         -500
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}/record-success",
+        "url": "={{ $('CONFIG').first().json.BREAKER_API_URL.replace(/\\/+$/, '') + '/breaker/' + encodeURIComponent($json.integration) + '/record-success' }}",
         "options": {
           "response": {
             "response": {
@@ -607,29 +596,28 @@
           }
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "is_probe",
-              "value": "={{ $json.is_probe }}"
-            }
-          ]
-        }
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ is_probe: $json.is_probe }) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
       },
       "id": "g-s-record",
       "name": "Record Breaker Success",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -300,
+        140,
         -800
       ],
-      "notes": "A successful probe fully closes the breaker and resets its failure/trip counters server-side -- a successful call while already closed just resets the failure streak. Fire-and-forget: it doesn't gate the response, since the fetch itself already succeeded."
+      "notes": "A successful probe fully closes the breaker and resets its failure/trip counters server-side -- a successful call while already closed just resets the failure streak. Fire-and-forget: it doesn't gate the response, since the fetch itself already succeeded.",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.CACHE_API_URL }}/cache/{{ $json.cache_key }}",
+        "url": "={{ $('CONFIG').first().json.CACHE_API_URL.replace(/\\/+$/, '') + '/cache/' + encodeURIComponent($json.cache_key) }}",
         "options": {
           "response": {
             "response": {
@@ -639,28 +627,23 @@
           }
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "body",
-              "value": "={{ JSON.stringify($json.body) }}"
-            },
-            {
-              "name": "cached_at",
-              "value": "={{ Date.now() }}"
-            }
-          ]
-        }
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: JSON.stringify($json.body ?? null), cached_at: Date.now() }) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
       },
       "id": "g-s-cache-write",
       "name": "Write Cache (Last-Known-Good)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -300,
+        140,
         -560
       ],
-      "notes": "Every fresh success refreshes the degrade-path cache -- a cache write failure here costs a little staleness next time something goes wrong, never the current, already-successful response."
+      "notes": "Every fresh success refreshes the degrade-path cache -- a cache write failure here costs a little staleness next time something goes wrong, never the current, already-successful response.",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -675,23 +658,23 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        -300,
+        140,
         -680
       ]
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nconst raw = (t.headers && (t.headers['retry-after'] || t.headers['Retry-After'])) || null;\nlet retry_after_seconds = 5; // sane default if the provider didn't send one\nif (raw) {\n  const asInt = parseInt(raw, 10);\n  if (!Number.isNaN(asInt) && String(asInt) === String(raw).trim()) retry_after_seconds = asInt; // seconds form\n  else { const asDate = new Date(raw); if (!isNaN(asDate.getTime())) retry_after_seconds = Math.max(1, Math.round((asDate.getTime() - Date.now()) / 1000)); } // HTTP-date form\n}\nreturn [{ json: { ...t, retry_after_seconds: Math.min(retry_after_seconds, 120) } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $json;\nconst raw = (t.headers && (t.headers['retry-after'] || t.headers['Retry-After'])) || null;\nlet secs = C.RETRY_AFTER_DEFAULT_SECONDS;               // used when the provider sent no usable header\nif (raw) {\n  const asInt = parseInt(raw, 10);\n  if (!Number.isNaN(asInt) && String(asInt) === String(raw).trim()) secs = asInt;        // seconds form\n  else { const d = new Date(raw); if (!isNaN(d.getTime())) secs = Math.max(1, Math.round((d.getTime() - Date.now()) / 1000)); } // HTTP-date form\n}\nreturn [{ json: { ...t, retry_after_seconds: Math.min(secs, C.RETRY_AFTER_CAP_SECONDS) } }];"
       },
       "id": "g-rl-parse",
       "name": "Parse Retry-After Header",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        -300,
+        140,
         -320
       ],
-      "notes": "Retry-After can legally be either an integer number of seconds or an HTTP-date -- both forms are handled, and the result is capped at 120s regardless of what the header says, since this is answering a synchronous webhook, not a background job that can wait indefinitely."
+      "notes": "Retry-After may be seconds or an HTTP-date; both are handled and the result is capped at RETRY_AFTER_CAP_SECONDS. Keep the cap under ~60s: n8n holds short waits in memory, but longer waits are offloaded and a waiting webhook caller can time out."
     },
     {
       "parameters": {
@@ -703,7 +686,7 @@
           "conditions": [
             {
               "leftValue": "={{ $json.attempt }}",
-              "rightValue": 3,
+              "rightValue": "={{ Math.min(Number($('CONFIG').first().json.MAX_ATTEMPTS), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).max_attempts) || Number($('CONFIG').first().json.MAX_ATTEMPTS)) }}",
               "operator": {
                 "type": "number",
                 "operation": "lt"
@@ -726,7 +709,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        -80,
+        360,
         -320
       ],
       "notes": "A probe call never retries in place -- a probe is one shot to test recovery; if it gets rate-limited, that's still useful information (the breaker stays open) rather than spending the one probe slot's TTL on retries."
@@ -741,7 +724,7 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        140,
+        580,
         -400
       ]
     },
@@ -754,7 +737,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        360,
+        800,
         -400
       ]
     },
@@ -767,14 +750,14 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        140,
+        580,
         -220
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.BREAKER_STATE_API_URL }}/breaker/{{ $json.integration }}/record-failure",
+        "url": "={{ $('CONFIG').first().json.BREAKER_API_URL.replace(/\\/+$/, '') + '/breaker/' + encodeURIComponent($json.integration) + '/record-failure' }}",
         "options": {
           "response": {
             "response": {
@@ -784,28 +767,23 @@
           }
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "is_probe",
-              "value": "={{ $json.is_probe }}"
-            },
-            {
-              "name": "error_message",
-              "value": "={{ $json.network_error ? 'connection error' : ('HTTP ' + $json.statusCode) }}"
-            }
-          ]
-        }
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ is_probe: $json.is_probe, error_message: $json.network_error ? 'connection error' : ('HTTP ' + $json.statusCode), failure_threshold: Math.min(Number($('CONFIG').first().json.FAILURE_THRESHOLD), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).failure_threshold) || Number($('CONFIG').first().json.FAILURE_THRESHOLD)), cooldown_seconds: Math.max(Number($('CONFIG').first().json.COOLDOWN_SECONDS), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).cooldown_seconds) || 0), max_cooldown_seconds: $('CONFIG').first().json.MAX_COOLDOWN_SECONDS }) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
       },
       "id": "g-tr-record",
       "name": "Record Breaker Failure",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -300,
+        140,
         -60
       ],
-      "notes": "A failed probe re-opens the breaker immediately with a longer cooldown (the store doubles it per trip, capped) rather than waiting out a fresh failure-threshold count -- one bad probe is enough evidence the provider still isn't healthy."
+      "notes": "The thresholds travel with the request, so tuning the breaker means editing CONFIG, not the service. A failed probe re-opens the breaker immediately with a longer cooldown (the service doubles it per trip, capped at MAX_COOLDOWN_SECONDS).",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -818,7 +796,7 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        -80,
+        360,
         -60
       ]
     },
@@ -832,7 +810,7 @@
           "conditions": [
             {
               "leftValue": "={{ $json.attempt }}",
-              "rightValue": 3,
+              "rightValue": "={{ Math.min(Number($('CONFIG').first().json.MAX_ATTEMPTS), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).max_attempts) || Number($('CONFIG').first().json.MAX_ATTEMPTS)) }}",
               "operator": {
                 "type": "number",
                 "operation": "lt"
@@ -855,23 +833,23 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        140,
+        580,
         -60
       ]
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nconst BASE_MS = 500;\nconst backoff_ms = BASE_MS * Math.pow(2, t.attempt - 1); // 500ms, 1s, 2s\nconst jitter_ms = Math.floor(Math.random() * 250);\nreturn [{ json: { ...t, wait_seconds: Math.round((backoff_ms + jitter_ms) / 100) / 10 } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $json;\nconst backoff_ms = C.BACKOFF_BASE_MS * Math.pow(2, t.attempt - 1);\nconst jitter_ms = Math.floor(Math.random() * C.BACKOFF_JITTER_MS);\nreturn [{ json: { ...t, wait_seconds: Math.round((backoff_ms + jitter_ms) / 100) / 10 } }];"
       },
       "id": "g-tr-backoff-calc",
       "name": "Compute Jittered Backoff",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        360,
+        800,
         20
       ],
-      "notes": "Exponential (500ms / 1s / 2s) plus up to 250ms jitter -- small numbers on purpose, since this is a synchronous webhook path and the caller is still waiting; workflow 10's monitor uses minutes-scale backoff for a background retry, this uses sub-second-to-low-second because the context is completely different."
+      "notes": "Exponential backoff from BACKOFF_BASE_MS plus random jitter up to BACKOFF_JITTER_MS. Small on purpose: this runs inside a synchronous webhook, so the caller is waiting."
     },
     {
       "parameters": {
@@ -883,7 +861,7 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        580,
+        1020,
         20
       ]
     },
@@ -896,20 +874,20 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        800,
+        1240,
         20
       ]
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: t.is_probe ? 'probe_failed' : 'transient_retries_exhausted', retry_after_seconds: 30 } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: t.is_probe ? 'probe_failed' : 'transient_retries_exhausted', retry_after_seconds: C.DEGRADE_RETRY_AFTER_SECONDS } }];"
       },
       "id": "g-tr-exhausted-degrade",
       "name": "Mark Degrade: Transient (Exhausted)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        140,
+        580,
         140
       ]
     },
@@ -926,7 +904,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        -300,
+        140,
         160
       ],
       "notes": "A 4xx that isn't 429 means the request we sent is wrong (bad params, missing auth, not found), not that the provider is unhealthy. Mirroring the status back to the original caller, untouched by retry or breaker logic, is the honest answer -- retrying a malformed request three times with backoff would just be slower wrongness."
@@ -934,7 +912,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.CACHE_API_URL }}/cache/{{ $json.cache_key }}",
+        "url": "={{ $('CONFIG').first().json.CACHE_API_URL.replace(/\\/+$/, '') + '/cache/' + encodeURIComponent($json.cache_key) }}",
         "options": {
           "response": {
             "response": {
@@ -942,17 +920,21 @@
               "fullResponse": true
             }
           }
-        }
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
       },
       "id": "g-dg-cache-get",
       "name": "Get Cached Response",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1020,
+        1460,
         -60
       ],
-      "notes": "A cache miss here is the normal shape for an integration that's never succeeded yet, not an error -- handled explicitly below rather than assumed to always exist."
+      "notes": "A cache miss (or an unreachable cache service) is treated as 'no cached copy', never as an error.",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -965,20 +947,20 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        1240,
+        1680,
         -60
       ]
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nconst found = t.statusCode >= 200 && t.statusCode < 300 && t.body && t.body.cached_at;\nconst age_seconds = found ? Math.round((Date.now() - t.body.cached_at) / 1000) : null;\nconst within_tolerance = t.max_staleness_seconds == null ? true : (age_seconds !== null && age_seconds <= t.max_staleness_seconds);\nconst usable = Boolean(found) && within_tolerance;\nlet cached_body = null;\nif (found) { try { cached_body = JSON.parse(t.body.body); } catch (e) { cached_body = t.body.body; } }\nreturn [{ json: { usable, cached_body, age_seconds, degrade_reason: t.degrade_reason, retry_after_seconds: t.retry_after_seconds } }];"
+        "jsCode": "const t = $json;\nconst E = ($('Gateway Rules').first().json.rules.eff || {})[t.integration] || {};\nconst paths = E.remove_fields || [];\nconst strip = (v, parts) => {\n  if (Array.isArray(v)) return v.map((x) => strip(x, parts));\n  if (v === null || typeof v !== 'object') return v;\n  const [h, ...rest] = parts;\n  const o = { ...v };\n  if (rest.length === 0) delete o[h]; else if (h in o) o[h] = strip(o[h], rest);\n  return o;\n};\nconst found = t.statusCode >= 200 && t.statusCode < 300 && t.body && t.body.cached_at && E.use_cache !== false;\nconst age_seconds = found ? Math.round((Date.now() - t.body.cached_at) / 1000) : null;\nconst within_tolerance = t.max_staleness_seconds == null ? true : (age_seconds !== null && age_seconds <= t.max_staleness_seconds);\nconst usable = Boolean(found) && within_tolerance;\nlet cached_body = null;\nif (found) { try { cached_body = JSON.parse(t.body.body); } catch (e) { cached_body = t.body.body; } }\nif (found && cached_body !== null && typeof cached_body === 'object') for (const p of paths) cached_body = strip(cached_body, p.split('.'));   // entries cached before a rule existed\nreturn [{ json: { usable, cached_body, age_seconds, degrade_reason: t.degrade_reason, retry_after_seconds: t.retry_after_seconds } }];"
       },
       "id": "g-dg-eval",
       "name": "Evaluate Cache Usability",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [
-        1460,
+        1900,
         -60
       ],
       "notes": "max_staleness_seconds is caller-controlled on purpose -- a dashboard widget might happily take an hour-old cached value, while a payment-status check might rather fail loudly than show stale data. When the caller doesn't specify it, any cache hit at all is considered usable."
@@ -1008,7 +990,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1680,
+        2120,
         -60
       ]
     },
@@ -1025,7 +1007,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        1900,
+        2340,
         -140
       ],
       "notes": "Graceful degradation's whole payoff: the caller gets a usable answer and an honest 'this is stale and why' instead of an outage propagating straight through to them."
@@ -1051,10 +1033,235 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        1900,
+        2340,
         20
       ],
       "notes": "Even the failure response is actionable -- a Retry-After header and an explicit reason (breaker open / rate limited / provider erroring) rather than a bare 503, and cache_available:false tells the caller this integration has literally never succeeded yet, which is a different problem than 'temporarily down'."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "GATEWAY_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "BREAKER_API_URL",
+              "value": "http://localhost:4000",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "RATE_LIMIT_API_URL",
+              "value": "http://localhost:4000",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "CACHE_API_URL",
+              "value": "http://localhost:4000",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "STATE_API_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "PROVIDERS_JSON",
+              "value": "{\"demo\": {\"base_url\": \"http://localhost:4000/provider\", \"headers\": {}, \"rate_limit\": {\"capacity\": 10, \"refill_per_second\": 5}}}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "PROVIDER_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-7",
+              "name": "FAILURE_THRESHOLD",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "cfg-8",
+              "name": "COOLDOWN_SECONDS",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "cfg-9",
+              "name": "MAX_COOLDOWN_SECONDS",
+              "value": 600,
+              "type": "number"
+            },
+            {
+              "id": "cfg-10",
+              "name": "PROBE_CLAIM_TTL_SECONDS",
+              "value": 15,
+              "type": "number"
+            },
+            {
+              "id": "cfg-11",
+              "name": "MAX_ATTEMPTS",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "cfg-12",
+              "name": "BACKOFF_BASE_MS",
+              "value": 500,
+              "type": "number"
+            },
+            {
+              "id": "cfg-13",
+              "name": "BACKOFF_JITTER_MS",
+              "value": 250,
+              "type": "number"
+            },
+            {
+              "id": "cfg-14",
+              "name": "RETRY_AFTER_DEFAULT_SECONDS",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "RETRY_AFTER_CAP_SECONDS",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "cfg-16",
+              "name": "DEGRADE_RETRY_AFTER_SECONDS",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "cfg-17",
+              "name": "PROBE_IN_PROGRESS_RETRY_AFTER_SECONDS",
+              "value": 10,
+              "type": "number"
+            },
+            {
+              "id": "cfg-18",
+              "name": "RATE_LIMIT_FAIL_OPEN",
+              "value": true,
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-config",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -3380,
+        -500
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. Every URL, credential header, limit, timeout and threshold lives here. See the sticky note and README for what each value does."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: $json.http_status === 401 ? 'unauthorized' : ($json.http_status === 500 ? 'gateway_misconfigured' : 'invalid_request'), details: $json.http_status === 401 ? undefined : $json.errors } }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-respond-400",
+      "name": "Respond Error (Invalid Request)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -2500,
+        -360
+      ]
+    },
+    {
+      "parameters": {
+        "width": 640,
+        "height": 500,
+        "color": 4,
+        "content": "## Rate-Limited API Gateway with Circuit Breaker\n**Setup (about 5 minutes)**\n1. Run a state service that implements the HTTP contract in the README (a reference one is included: `node 12-rate-limited-api-gateway-mock-server.js`).\n2. Open the **CONFIG** node and set the three service URLs, `STATE_API_HEADERS_JSON` if your service needs auth, and `PROVIDERS_JSON` (one entry per API you front).\n3. Activate the workflow and POST to `/webhook/gateway/fetch`.\n\n**Adding another API** = add a key to `PROVIDERS_JSON`. No node changes.\n\n**Tuning** (thresholds, cooldowns, retries, timeouts) = CONFIG only.\n\n**Per-API rules** (allowed paths and parameters, fields to remove, staleness limit, no caching, fewer attempts) = the data-only **Gateway Rules** node.\n\nNothing else in this workflow contains a URL, secret or limit."
+      },
+      "id": "g-sticky",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -3640,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// GATEWAY RULES: the node for what is special about EACH API you front. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. Every request is checked against it, and a mistake gives a\n// clear 500 (gateway_misconfigured, lines start \"Rules:\") before any service or provider is called.\n// Rules can only make the gateway stricter or add plain data. What you cannot change here, on purpose:\n// the circuit breaker, the single-probe claim, the rate limiter, the retry and Retry-After handling,\n// the degrade-to-cache logic, and the CONFIG limits (a rule can lower them, never raise them).\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst rules = {\n  // Settings that apply to every integration unless that integration has its own value (see below).\n  defaults: {},\n  // One entry per integration name from CONFIG.PROVIDERS_JSON (an unknown name is refused). Each entry may set:\n  //   allowed_path_prefixes: ['items/', 'orders/']   resource_path must start with one of these (400 otherwise)\n  //   allowed_params: ['page', 'limit']              only these query parameter names are accepted\n  //   blocked_params: ['api_key', 'token']           these query parameter names are refused\n  //   max_staleness_seconds: 300                     oldest cached answer ever served; also the default when the caller sends none\n  //   remove_fields: ['password', 'user.ssn']       dotted paths removed from every answer and from the cache (lists are handled item by item)\n  //   use_cache: false                               never store or serve a cached copy for this integration\n  //   max_attempts: 2                                tries per request, at most CONFIG.MAX_ATTEMPTS\n  //   failure_threshold: 2                           failures that open the breaker, at most CONFIG.FAILURE_THRESHOLD\n  //   cooldown_seconds: 120                          how long the breaker stays open, at least CONFIG.COOLDOWN_SECONDS\n  // Example: { orders: { allowed_path_prefixes: ['orders/'], remove_fields: ['customer.email'], max_staleness_seconds: 300 } }\n  integrations: {},\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst defaults = pick(rules, 'defaults', {});\nconst integrations = pick(rules, 'integrations', {});\nlet names = [];\ntry { names = Object.keys(JSON.parse($('CONFIG').first().json.PROVIDERS_JSON)); } catch (e) { names = []; }   // a bad PROVIDERS_JSON is reported by Validate Request\nconst eff = {};                                                                                                // defaults + that integration's own values\nfor (const n of names) eff[n] = { ...(isObj(defaults) ? defaults : {}), ...(isObj(integrations) && isObj(integrations[n]) ? integrations[n] : {}) };\nconst norm = { defaults, integrations, eff, _is_obj: isObj(rules), _raw_keys: Object.keys(rules || {}) };\nreturn [{ json: { ...$input.first().json, rules: norm } }];\n"
+      },
+      "id": "g-rules",
+      "name": "Gateway Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3160,
+        -500
+      ],
+      "notes": "EDIT ME for what is special about each API: allowed paths and parameters, fields to remove, how stale a cached answer may be, no caching, fewer attempts, an earlier-opening breaker. Data only; checked on every request. The breaker, probe claim, rate limiter, retries and degrade logic cannot be changed here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $json;\nconst E = ($('Gateway Rules').first().json.rules.eff || {})[t.integration] || {};\nconst paths = E.remove_fields || [];\nconst strip = (v, parts) => {\n  if (Array.isArray(v)) return v.map((x) => strip(x, parts));\n  if (v === null || typeof v !== 'object') return v;\n  const [h, ...rest] = parts;\n  const o = { ...v };\n  if (rest.length === 0) delete o[h]; else if (h in o) o[h] = strip(o[h], rest);\n  return o;\n};\nif (!paths.length || t.body === null || typeof t.body !== 'object') return [{ json: t }];\nlet body = t.body;\nfor (const p of paths) body = strip(body, p.split('.'));\nreturn [{ json: { ...t, body } }];"
+      },
+      "id": "g-apply-fields",
+      "name": "Apply Field Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -190,
+        -680
+      ],
+      "notes": "Gateway Rules: removes the configured fields from the provider answer BEFORE it is returned or cached, so they never reach the caller or the cache. No rule = passes straight through."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ (($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).use_cache !== false }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "g-cache-allowed",
+      "name": "Cache Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -560
+      ],
+      "notes": "Gateway Rules: use_cache:false means nothing is stored for this integration."
     }
   ],
   "connections": {
@@ -1062,7 +1269,7 @@
       "main": [
         [
           {
-            "node": "Validate Request",
+            "node": "CONFIG",
             "type": "main",
             "index": 0
           }
@@ -1096,7 +1303,7 @@
         ],
         [
           {
-            "node": "Respond 400 (Invalid Request)",
+            "node": "Respond Error (Invalid Request)",
             "type": "main",
             "index": 0
           }
@@ -1338,17 +1545,7 @@
       "main": [
         [
           {
-            "node": "Record Breaker Success",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Write Cache (Last-Known-Good)",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Respond 200 (Fresh)",
+            "node": "Apply Field Rules",
             "type": "main",
             "index": 0
           }
@@ -1644,6 +1841,61 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Gateway Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gateway Rules": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Field Rules": {
+      "main": [
+        [
+          {
+            "node": "Record Breaker Success",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cache Allowed?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond 200 (Fresh)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Write Cache (Last-Known-Good)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     }
   },

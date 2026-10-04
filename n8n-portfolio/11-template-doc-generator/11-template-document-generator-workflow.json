@@ -1,0 +1,1903 @@
+{
+  "name": "Template-Driven Document Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "documents/generate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-0",
+      "name": "Generate Document Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "POST { template_id, template_version?, document_type, recipient?, merge_data, idempotency_key }. Allocates a document number, renders, archives, emails and returns the result. Safe to retry with the same idempotency_key.",
+      "webhookId": "doc-generate"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "documents/preview",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "Preview Document Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        260
+      ],
+      "notes": "Same body as /generate (idempotency_key not needed). Returns the rendered PDF. Allocates no number, archives nothing, sends nothing.",
+      "webhookId": "doc-preview"
+    },
+    {
+      "parameters": {
+        "jsCode": "const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst req = $input.first().json;\nconst body = isObj(req.body) ? req.body : {};\nreturn [{ json: {\n  mode: 'generate',\n  headers: req.headers || {},\n  body_is_object: isObj(req.body),\n  template_id: body.template_id,\n  template_version: body.template_version === undefined ? 'latest' : body.template_version,\n  document_type: body.document_type,\n  recipient: body.recipient === undefined ? {} : body.recipient,\n  merge_data: body.merge_data,\n  idempotency_key: body.idempotency_key === undefined ? null : body.idempotency_key\n} }];"
+      },
+      "id": "g-2",
+      "name": "Normalize Generate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst req = $input.first().json;\nconst body = isObj(req.body) ? req.body : {};\nreturn [{ json: {\n  mode: 'preview',\n  headers: req.headers || {},\n  body_is_object: isObj(req.body),\n  template_id: body.template_id,\n  template_version: body.template_version === undefined ? 'latest' : body.template_version,\n  document_type: body.document_type,\n  recipient: body.recipient === undefined ? {} : body.recipient,\n  merge_data: body.merge_data,\n  idempotency_key: body.idempotency_key === undefined ? null : body.idempotency_key\n} }];"
+      },
+      "id": "g-3",
+      "name": "Normalize Preview Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "TEMPLATE_STORE_API_URL",
+              "value": "http://localhost:4100",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "DOC_STORE_API_URL",
+              "value": "http://localhost:4100",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "GOTENBERG_API_URL",
+              "value": "http://localhost:4100",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "NOTIFY_API_URL",
+              "value": "http://localhost:4100",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "AUDIT_API_URL",
+              "value": "http://localhost:4100",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-7",
+              "name": "GOTENBERG_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-8",
+              "name": "GENERATOR_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-9",
+              "name": "SEND_EMAIL",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-10",
+              "name": "TOTALS_TOLERANCE",
+              "value": 0.01,
+              "type": "number"
+            },
+            {
+              "id": "cfg-11",
+              "name": "CURRENCY_SYMBOL",
+              "value": "$",
+              "type": "string"
+            },
+            {
+              "id": "cfg-12",
+              "name": "DATE_LOCALE",
+              "value": "en-US",
+              "type": "string"
+            },
+            {
+              "id": "cfg-13",
+              "name": "DATE_TIME_ZONE",
+              "value": "UTC",
+              "type": "string"
+            },
+            {
+              "id": "cfg-14",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "PDF_TIMEOUT_MS",
+              "value": 30000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-4",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        520,
+        130
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. Every URL, credential header, limit and formatting choice lives here. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// DOCUMENT RULES: the node for what THIS business generates. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. Every request is checked against it, and a mistake gives a\n// clear 500 (generator_misconfigured, lines start \"Rules:\") before a template is fetched or a number is used.\n// Rules can only make the generator stricter or add plain data (more types, defaults, formats).\n// What you cannot change here, on purpose: number allocation and the idempotency record, the invoice\n// maths in whole cents, HTML escaping, the PDF check, archiving, and the failure/retry handling.\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst rules = {\n  // More document types that need no maths (like a contract), e.g. ['letter', 'receipt', 'nda'].\n  // They get their own number series in your document store. Lower-case letters, digits, _.\n  extra_document_types: [],\n  // More document types that carry line items and totals (like an invoice), e.g. ['quote', 'credit_note'].\n  // Subtotal, tax and total are recomputed in cents exactly as for invoices. Do not repeat 'invoice' here.\n  totals_document_types: [],\n  // If not empty, ONLY these template ids can be used (anything else is refused with 403 template_not_allowed).\n  allowed_template_ids: [],\n  // Fields every request must carry, on top of what the template itself requires (422 missing_required_fields).\n  // Key '*' = every type, or a document type. Values are field paths such as 'client.name'.\n  // Example: { '*': ['client.name'], invoice: ['due_date'] }\n  required_fields: {},\n  // Values used when the request leaves a field out (the request always wins, even with an empty value).\n  // Example: { company_name: 'Acme Ltd', payment_terms: 'Net 30' }. Text, number or true/false only.\n  defaults: {},\n  // Stricter limits. max_line_items (a whole number), max_total (largest document total), max_tax_rate (a fraction, 0.25 = 25%).\n  // Example: { max_line_items: 100, max_total: 50000, max_tax_rate: 0.25 }\n  limits: {},\n  // If not empty, a document may only be addressed to these email domains (422 recipient_domain_not_allowed).\n  recipient_domains_only: [],\n  // Email domains documents may never be addressed to.\n  recipient_domains_blocked: [],\n  // Document types that are generated and archived but never emailed (the response says delivery.email \"skipped\").\n  no_email_types: [],\n  // Per template id: formatting that replaces CONFIG for that template. Keys: currency_symbol, date_locale, date_time_zone.\n  // Example: { 'invoice-de': { currency_symbol: '\u20ac', date_locale: 'de-DE', date_time_zone: 'Europe/Berlin' } }\n  template_formats: {},\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst KEYS = ['extra_document_types', 'totals_document_types', 'allowed_template_ids', 'required_fields', 'defaults', 'limits', 'recipient_domains_only', 'recipient_domains_blocked', 'no_email_types', 'template_formats'];\nconst D = { extra_document_types: [], totals_document_types: [], allowed_template_ids: [], required_fields: {}, defaults: {}, limits: {}, recipient_domains_only: [], recipient_domains_blocked: [], no_email_types: [], template_formats: {} };\nconst norm = { _is_obj: rules !== null && typeof rules === 'object' && !Array.isArray(rules), _raw_keys: Object.keys(rules || {}) };\nfor (const k of KEYS) norm[k] = pick(rules, k, D[k]);\nreturn [{ json: { ...$input.first().json, rules: norm } }];\n"
+      },
+      "id": "g-5",
+      "name": "Document Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        650,
+        260
+      ],
+      "notes": "EDIT ME for what this business generates: extra document types, allowed templates, required fields, defaults, limits, recipient domains, per-template formatting. Data only; checked on every request. Number allocation, idempotency, the invoice maths, escaping and the PDF checks cannot be changed here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst r = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst fail = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) } } }];\n\n// 1. optional shared-secret check (blank GENERATOR_AUTH_TOKEN = open endpoint)\nif (C.GENERATOR_AUTH_TOKEN && (r.headers || {})['x-generator-token'] !== C.GENERATOR_AUTH_TOKEN) return fail(401, 'unauthorized');\n\n// 2. CONFIG sanity: a broken config should say so, not fail mysteriously three nodes later\nconst bad = [];\nconst needUrl = ['TEMPLATE_STORE_API_URL', 'GOTENBERG_API_URL'];\nif (r.mode === 'generate') needUrl.push('DOC_STORE_API_URL', 'AUDIT_API_URL');\nif (r.mode === 'generate' && C.SEND_EMAIL) needUrl.push('NOTIFY_API_URL');\nfor (const k of needUrl) if (!/^https?:\\/\\//.test(C[k] || '')) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.SLACK_WEBHOOK_URL && !/^https?:\\/\\//.test(C.SLACK_WEBHOOK_URL)) bad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'GOTENBERG_HEADERS_JSON']) {\n  try { if (!isObj(JSON.parse(C[k] || '{}'))) throw new Error('not an object'); } catch (err) { bad.push(`CONFIG.${k} must be a JSON object`); }\n}\nif (!(Number(C.TOTALS_TOLERANCE) >= 0)) bad.push('CONFIG.TOTALS_TOLERANCE must be a number >= 0');\ntry { new Intl.DateTimeFormat(C.DATE_LOCALE, { timeZone: C.DATE_TIME_ZONE }); } catch (err) { bad.push('CONFIG.DATE_LOCALE / DATE_TIME_ZONE not recognised'); }\n// ---- the Document Rules node\nconst R = $('Document Rules').first().json.rules;\nconst BASE_TYPES = ['contract', 'invoice'];\n{\n  const rb = (m) => bad.push('Rules: ' + m);\n  const list = (v, max, f) => Array.isArray(v) && v.length <= max && v.every(f) && new Set(v).size === v.length;\n  const typeName = (x) => typeof x === 'string' && /^[a-z][a-z0-9_]{0,29}$/.test(x);\n  const domain = (x) => typeof x === 'string' && /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?\\.[a-z]{2,}$/.test(x);\n  const tid = (x) => typeof x === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(x);\n  const path = (x) => typeof x === 'string' && /^[A-Za-z_]\\w*(\\.[A-Za-z_]\\w*)*$/.test(x) && x.length <= 100;\n  if (!R._is_obj) rb('rules must be an object');\n  else {\n    const KNOWN = ['extra_document_types', 'totals_document_types', 'allowed_template_ids', 'required_fields', 'defaults', 'limits', 'recipient_domains_only', 'recipient_domains_blocked', 'no_email_types', 'template_formats'];\n    for (const k of R._raw_keys) if (!KNOWN.includes(k)) rb(`${k} is not a known setting (${KNOWN.join(', ')})`);\n    if (!list(R.extra_document_types, 20, (x) => typeName(x) && !BASE_TYPES.includes(x))) rb(\"extra_document_types must be a list of different lower-case names (letters, digits, _), not 'contract' or 'invoice'\");\n    if (!list(R.totals_document_types, 20, (x) => typeName(x) && !BASE_TYPES.includes(x) && !(Array.isArray(R.extra_document_types) && R.extra_document_types.includes(x)))) rb(\"totals_document_types must be a list of different lower-case names, not 'contract' or 'invoice' and not also in extra_document_types\");\n    const known = [...BASE_TYPES, ...(Array.isArray(R.extra_document_types) ? R.extra_document_types : []), ...(Array.isArray(R.totals_document_types) ? R.totals_document_types : [])];\n    if (!list(R.allowed_template_ids, 200, tid)) rb('allowed_template_ids must be a list of at most 200 different template ids (letters, digits, . _ -)');\n    if (!isObj(R.required_fields) || Object.entries(R.required_fields).some(([k, v]) => !(k === '*' || known.includes(k)) || !list(v, 50, path))) rb(\"required_fields must be an object whose keys are '*' or a known document type and whose values are lists of field paths such as client.name\");\n    if (!isObj(R.defaults) || Object.keys(R.defaults).length > 50 || Object.entries(R.defaults).some(([k, v]) => !/^[A-Za-z_]\\w{0,49}$/.test(k) || ['line_items', 'total', 'document_number'].includes(k) || k.startsWith('computed_')\n      || !(typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.length <= 500)))) rb('defaults must be an object of at most 50 text, number or true/false values, not named line_items, total, document_number or computed_*');\n    if (!isObj(R.limits) || Object.keys(R.limits).some((k) => !['max_line_items', 'max_total', 'max_tax_rate'].includes(k))\n      || (R.limits.max_line_items !== undefined && !(Number.isInteger(R.limits.max_line_items) && R.limits.max_line_items >= 1 && R.limits.max_line_items <= 5000))\n      || (R.limits.max_total !== undefined && !(typeof R.limits.max_total === 'number' && R.limits.max_total > 0 && R.limits.max_total <= 1e12))\n      || (R.limits.max_tax_rate !== undefined && !(typeof R.limits.max_tax_rate === 'number' && R.limits.max_tax_rate > 0 && R.limits.max_tax_rate <= 1))) rb('limits may only contain max_line_items (whole number 1 to 5000), max_total (a number above 0) and max_tax_rate (a fraction above 0, up to 1)');\n    if (!list(R.recipient_domains_only, 200, domain) || !list(R.recipient_domains_blocked, 200, domain)) rb('recipient_domains_only and recipient_domains_blocked must be lists of different lower-case domains such as \"example.com\"');\n    if (!list(R.no_email_types, 20, (x) => known.includes(x))) rb('no_email_types must be a list of different known document types');\n    const fmtOk = (f) => {\n      if (!isObj(f) || !Object.keys(f).length || Object.keys(f).some((k) => !['currency_symbol', 'date_locale', 'date_time_zone'].includes(k))) return false;\n      if (f.currency_symbol !== undefined && !(typeof f.currency_symbol === 'string' && f.currency_symbol.length >= 1 && f.currency_symbol.length <= 5)) return false;\n      try { new Intl.DateTimeFormat(f.date_locale !== undefined ? f.date_locale : C.DATE_LOCALE, { timeZone: f.date_time_zone !== undefined ? f.date_time_zone : C.DATE_TIME_ZONE }); } catch (err) { return false; }\n      return true;\n    };\n    if (!isObj(R.template_formats) || Object.keys(R.template_formats).length > 100 || Object.entries(R.template_formats).some(([k, v]) => !tid(k) || !fmtOk(v))) rb('template_formats must be an object of template id -> { currency_symbol (1 to 5 characters), date_locale, date_time_zone } using valid locale and time zone names');\n  }\n}\nif (bad.length) return fail(500, 'generator_misconfigured', bad);\n\n// 3. request validation (the caller's mistakes -> 400)\nconst errors = [];\nconst idRe = /^[A-Za-z0-9_.-]{1,100}$/;\nif (!r.body_is_object) errors.push('request body must be a JSON object');\nif (typeof r.template_id !== 'string' || !idRe.test(r.template_id)) errors.push('template_id is required (letters, digits, . _ - only)');\nif (typeof r.template_version !== 'string' || !idRe.test(r.template_version)) errors.push('template_version must be \"latest\" or a version id');\nconst ALL_TYPES = [...BASE_TYPES, ...R.extra_document_types, ...R.totals_document_types];\nif (!ALL_TYPES.includes(r.document_type)) errors.push('document_type must be ' + (ALL_TYPES.length === 2 ? ALL_TYPES.map((t) => `'${t}'`).join(' or ') : 'one of ' + ALL_TYPES.map((t) => `'${t}'`).join(', ')));\nif (!isObj(r.merge_data)) errors.push('merge_data must be an object');\nif (!isObj(r.recipient)) errors.push('recipient must be an object');\nelse if (r.recipient.email !== undefined && r.recipient.email !== null && r.recipient.email !== '' &&\n         !(typeof r.recipient.email === 'string' && /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(r.recipient.email))) errors.push('recipient.email is not a valid email address');\nif (r.mode === 'generate' && (typeof r.idempotency_key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(r.idempotency_key)))\n  errors.push('idempotency_key is required for /documents/generate (1-128 chars: letters, digits, . _ : -)');\nif (errors.length) return fail(400, 'invalid_request', errors);\n\n// ---- Document Rules: refusals that happen before anything is fetched or allocated\nif (R.allowed_template_ids.length && !R.allowed_template_ids.includes(r.template_id)) return fail(403, 'template_not_allowed');\n{\n  const em = r.recipient.email;\n  if (typeof em === 'string' && em) {\n    const dom = em.slice(em.lastIndexOf('@') + 1).toLowerCase();\n    if ((R.recipient_domains_only.length && !R.recipient_domains_only.includes(dom)) || R.recipient_domains_blocked.includes(dom)) return fail(422, 'recipient_domain_not_allowed', { domain: dom });\n  }\n}\n\nreturn [{ json: { ok: true, mode: r.mode, template_id: r.template_id, template_version: r.template_version,\n  document_type: r.document_type, recipient: r.recipient, merge_data: r.merge_data, idempotency_key: r.idempotency_key } }];"
+      },
+      "id": "g-6",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        130
+      ],
+      "notes": "Auth token, CONFIG sanity and request-shape checks. Every failure here is a clean 401/400/500 with a reason, never a stack trace."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-7",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-7",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        130
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-8",
+      "name": "Respond JSON",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        4160,
+        -260
+      ],
+      "notes": "Every non-PDF answer in the workflow flows through this one node. The code node before it decides http_status and response_body."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.TEMPLATE_STORE_API_URL.replace(/\\/+$/, '') + '/templates/' + encodeURIComponent($json.template_id) + '?version=' + encodeURIComponent($json.template_version) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-9",
+      "name": "Fetch Template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        40
+      ],
+      "notes": "GET {TEMPLATE_STORE}/templates/{id}?version=  -> 200 {active, required_fields, html} | 404. neverError is on so the code node can tell 404 from \"store down\".",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Validate Request').first().json;\nconst r = $input.first().json;\nconst out = (status, error, extra) => [{ json: { ok: false, http_status: status, response_body: { error, ...(extra || {}) } } }];\nif (r.error || typeof r.statusCode !== 'number') return out(503, 'template_store_unavailable');\nif (r.statusCode === 404) return out(404, 'template_not_found');\nif (r.statusCode !== 200) return out(503, 'template_store_unavailable', { upstream_status: r.statusCode });\nconst t = r.body && typeof r.body === 'object' ? r.body : {};\nif (t.active !== true) return out(409, 'template_inactive');\nif (typeof t.html !== 'string' || !t.html.trim()) return out(502, 'template_store_bad_response', { detail: 'template has no html' });\n\nconst R = $('Document Rules').first().json.rules;\nconst getPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);\nconst merge_data = { ...R.defaults, ...ctx.merge_data };              // Document Rules: defaults fill fields the request left out\nconst required = [...new Set([...(Array.isArray(t.required_fields) ? t.required_fields : []), ...(R.required_fields['*'] || []), ...(R.required_fields[ctx.document_type] || [])])];\nconst missing = required.filter((f) => {\n  const v = getPath(merge_data, f);\n  return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);\n});\nif (missing.length) return out(422, 'missing_required_fields', { missing_fields: missing });\nreturn [{ json: { ...ctx, merge_data, ok: true, template_html: t.html } }];"
+      },
+      "id": "g-10",
+      "name": "Check Template",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        40
+      ],
+      "notes": "Classifies the template-store answer: 404 not found / 409 inactive / 503 store down / 422 missing required fields."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-11",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-11",
+      "name": "Template OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst ctx = $('Check Template').first().json;\nconst R = $('Document Rules').first().json.rules;\nconst out = (status, error, extra) => [{ json: { ok: false, http_status: status, response_body: { error, ...(extra || {}) } } }];\nconst data = JSON.parse(JSON.stringify(ctx.merge_data));   // never mutate the caller's object\n\nif (ctx.document_type === 'invoice' || R.totals_document_types.includes(ctx.document_type)) {\n  const items = data.line_items;\n  if (!Array.isArray(items) || items.length === 0) return out(422, 'invalid_line_items', { detail: 'line_items must be a non-empty array' });\n  if (R.limits.max_line_items !== undefined && items.length > R.limits.max_line_items) return out(422, 'too_many_line_items', { max_line_items: R.limits.max_line_items, supplied: items.length });\n  const bad = [];\n  let subtotal = 0;                                   // integer cents: no floating point drift\n  items.forEach((it, i) => {\n    const q = typeof it?.quantity === 'string' && it.quantity.trim() === '' ? NaN : Number(it?.quantity);\n    const p = typeof it?.unit_price === 'string' && it.unit_price.trim() === '' ? NaN : Number(it?.unit_price);\n    if (!Number.isFinite(q) || q < 0) bad.push(`line_items[${i}].quantity must be a number >= 0`);\n    if (!Number.isFinite(p)) bad.push(`line_items[${i}].unit_price must be a number`);\n    if (Number.isFinite(q) && Number.isFinite(p)) {\n      const lineCents = Math.round((q * p + Number.EPSILON) * 100);\n      subtotal += lineCents;\n      it.line_total = lineCents / 100;\n    }\n  });\n  if (bad.length) return out(422, 'invalid_line_items', { details: bad });\n  const rate = data.tax_rate === undefined || data.tax_rate === null || data.tax_rate === '' ? 0 : Number(data.tax_rate);\n  const maxRate = R.limits.max_tax_rate !== undefined ? R.limits.max_tax_rate : 1;\n  if (!Number.isFinite(rate) || rate < 0 || rate > maxRate) return out(422, 'invalid_tax_rate', { detail: `tax_rate is a fraction between 0 and ${maxRate} (0.07 = 7%)` });\n  const tax = Math.round(subtotal * rate);\n  const total = subtotal + tax;\n  if (R.limits.max_total !== undefined && total > Math.round(R.limits.max_total * 100)) return out(422, 'total_exceeds_limit', { max_total: R.limits.max_total, computed_total: total / 100 });\n  if (data.total !== undefined && data.total !== null) {\n    const supplied = typeof data.total === 'string' && data.total.trim() === '' ? NaN : Number(data.total);\n    if (!Number.isFinite(supplied)) return out(422, 'invalid_total', { detail: 'total, when supplied, must be a number' });\n    if (Math.abs(Math.round(supplied * 100) - total) > Math.round(Number(C.TOTALS_TOLERANCE) * 100))\n      return out(409, 'totals_mismatch', { supplied_total: supplied, computed_total: total / 100 });\n  }\n  data.computed_subtotal = subtotal / 100;\n  data.computed_tax = tax / 100;\n  data.computed_total = total / 100;\n}\nreturn [{ json: { ...ctx, ok: true, render_data: data } }];"
+      },
+      "id": "g-12",
+      "name": "Prepare Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2340,
+        40
+      ],
+      "notes": "Invoices: validates line items, recomputes subtotal/tax/total in integer cents, and rejects a caller-supplied total that disagrees. Runs BEFORE a document number is allocated, so a rejected request never burns a number."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-13",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-13",
+      "name": "Document OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-14",
+              "leftValue": "={{ $('Prepare Document').first().json.mode === 'generate' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-14",
+      "name": "Generate Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.DOC_STORE_API_URL.replace(/\\/+$/, '') }}/generations",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { idempotency_key: $json.idempotency_key, document_type: $json.document_type } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-15",
+      "name": "Create Generation Record",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        -80
+      ],
+      "notes": "Atomic create-or-return-existing. 201 {document_number} = you own this key. 409 {existing:{document_number,status,archive_url}} = someone already does. The number is allocated here, by the store, never by the workflow.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Prepare Document').first().json;\nconst r = $input.first().json;\nconst respond = (status, body, outcome) => [{ json: { ok: false, outcome, http_status: status, response_body: body } }];\nif (r.error || typeof r.statusCode !== 'number') return respond(503, { error: 'document_store_unavailable' }, 'store_error');\nconst body = r.body && typeof r.body === 'object' ? r.body : {};\nif (r.statusCode === 201 && body.document_number) return [{ json: { ok: true, outcome: 'new', document_number: body.document_number } }];\nif (r.statusCode === 409) {\n  const ex = body.existing || {};\n  if (ex.status === 'completed')\n    return respond(200, { status: 'already_generated', document_number: ex.document_number, archive_url: ex.archive_url || null }, 'cached');\n  if (ex.status === 'failed_needs_retry' && ex.document_number)\n    return [{ json: { ok: true, outcome: 'retry', document_number: ex.document_number } }];\n  if (ex.status === 'pending')\n    return respond(409, { error: 'generation_in_progress', document_number: ex.document_number || null, detail: 'another request holds this idempotency_key; retry shortly' }, 'in_progress');\n  return respond(503, { error: 'generation_record_in_unexpected_state', status: ex.status || null }, 'unexpected_state');\n}\nreturn respond(503, { error: 'document_store_unavailable', upstream_status: r.statusCode }, 'store_error');"
+      },
+      "id": "g-16",
+      "name": "Evaluate Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3380,
+        -80
+      ],
+      "notes": "completed -> replay the cached answer (200). failed_needs_retry -> take the retry path with the SAME number. pending -> another request is working on it (409). Anything else is a clear 503."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "new",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "new"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "retry",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "retry"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "respond"
+        }
+      },
+      "id": "g-17",
+      "name": "Route by Record Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        3640,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.DOC_STORE_API_URL.replace(/\\/+$/, '') + '/generations/' + encodeURIComponent($('Prepare Document').first().json.idempotency_key) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: 'pending', expect_status: 'failed_needs_retry' } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-18",
+      "name": "Claim Retry",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3900,
+        -20
+      ],
+      "notes": "Compare-and-set failed_needs_retry -> pending. Of two simultaneous retries exactly one wins (200); the loser gets 409.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst respond = (status, body) => [{ json: { ok: false, http_status: status, response_body: body } }];\nif (r.error || typeof r.statusCode !== 'number') return respond(503, { error: 'document_store_unavailable' });\nif (r.statusCode === 200) return [{ json: { ok: true } }];\nif (r.statusCode === 409) return respond(409, { error: 'generation_in_progress', detail: 'another request just claimed this retry' });\nreturn respond(503, { error: 'document_store_unavailable', upstream_status: r.statusCode });"
+      },
+      "id": "g-19",
+      "name": "Evaluate Claim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-20",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-20",
+      "name": "Claim Won?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4420,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst ctx = $('Prepare Document').first().json;\nlet number = 'PREVIEW';\nif (ctx.mode === 'generate') number = $('Evaluate Record').first().json.document_number;\nconst warnings = new Set();\nconst fail = (detail) => [{ json: { ...ctx, ok: false, failure_stage: 'render', failure_detail: detail, document_number: number } }];\nconst TF = $('Document Rules').first().json.rules.template_formats[ctx.template_id] || {};      // Document Rules: per-template formatting\nconst FMT = { symbol: TF.currency_symbol !== undefined ? TF.currency_symbol : C.CURRENCY_SYMBOL, locale: TF.date_locale !== undefined ? TF.date_locale : C.DATE_LOCALE, zone: TF.date_time_zone !== undefined ? TF.date_time_zone : C.DATE_TIME_ZONE };\n\nconst BLOCKED = new Set(['__proto__', 'constructor', 'prototype']);\nconst lookup = (obj, path) => {\n  if (path === 'this') return obj;\n  return path.split('.').reduce((o, k) => (o == null || BLOCKED.has(k) ? undefined : o[k]), obj);\n};\nconst esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\n\nfunction fmtCurrency(v) {\n  if (v === undefined || v === null || v === '') { warnings.add('currency helper got an empty value'); return ''; }\n  const n = Number(v);\n  if (!Number.isFinite(n)) { warnings.add(`currency helper got a non-numeric value: ${String(v).slice(0, 40)}`); return esc(v); }\n  const s = Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');\n  return esc((n < 0 ? '-' : '') + FMT.symbol) + s;\n}\nfunction fmtDate(v) {\n  if (v === undefined || v === null || v === '') { warnings.add('date helper got an empty value'); return ''; }\n  const d = new Date(v);                                 // 'YYYY-MM-DD' parses as UTC midnight\n  if (Number.isNaN(d.getTime())) { warnings.add(`date helper got an unparseable value: ${String(v).slice(0, 40)}`); return esc(v); }\n  return esc(new Intl.DateTimeFormat(FMT.locale, { year: 'numeric', month: 'long', day: 'numeric', timeZone: FMT.zone }).format(d));\n}\n\n// ---- tiny template language: {{x}} {{currency x}} {{date x}} {{#if x}}..{{else}}..{{/if}} {{#each xs}}..{{/each}}, {{this}}, {{@number}}\nfunction parse(tpl) {\n  const re = /\\{\\{\\s*([^{}]*?)\\s*\\}\\}/g;\n  const root = { kind: 'root', body: [] };\n  const stack = [root];\n  let last = 0, m;\n  const cur = () => stack[stack.length - 1];\n  const target = (n) => (n.inElse ? n.no : n.body);\n  while ((m = re.exec(tpl))) {\n    if (m.index > last) target(cur()).push({ kind: 'text', v: tpl.slice(last, m.index) });\n    last = re.lastIndex;\n    const ex = m[1];\n    let mm;\n    if ((mm = ex.match(/^#(each|if)\\s+([\\w.]+)$/))) {\n      const node = { kind: mm[1], path: mm[2], body: [], no: [], inElse: false };\n      target(cur()).push(node); stack.push(node);\n    } else if ((mm = ex.match(/^\\/(each|if)$/))) {\n      if (cur().kind !== mm[1]) throw new Error(`template error: {{/${mm[1]}}} does not match an open {{#${cur().kind}}}`);\n      stack.pop();\n    } else if (ex === 'else') {\n      if (cur().kind !== 'if') throw new Error('template error: {{else}} outside {{#if}}');\n      cur().inElse = true;\n    } else if (/^#|^\\//.test(ex)) {\n      throw new Error(`template error: unknown block {{${ex}}}`);\n    } else target(cur()).push({ kind: 'var', expr: ex });\n  }\n  if (last < tpl.length) target(cur()).push({ kind: 'text', v: tpl.slice(last) });\n  if (stack.length > 1) throw new Error(`template error: {{#${cur().kind} ${cur().path}}} is never closed`);\n  return root;\n}\nfunction get(path, scope) {\n  for (let i = scope.length - 1; i >= 0; i--) {\n    const v = lookup(scope[i].value, path);\n    if (v !== undefined) return v;\n    if (path === '@number') return scope[i].number;\n  }\n  return undefined;\n}\nfunction evalNodes(nodes, scope) {\n  let out = '';\n  for (const n of nodes) {\n    if (n.kind === 'text') out += n.v;\n    else if (n.kind === 'var') {\n      const h = n.expr.match(/^(currency|date)\\s+([\\w.@]+)$/);\n      if (h) out += h[1] === 'currency' ? fmtCurrency(get(h[2], scope)) : fmtDate(get(h[2], scope));\n      else {\n        const v = get(n.expr, scope);\n        if (v === undefined || v === null) { warnings.add(`unresolved field: ${n.expr}`); }\n        else if (typeof v === 'object') { warnings.add(`field is not a plain value: ${n.expr}`); }\n        else out += esc(v);\n      }\n    } else if (n.kind === 'if') {\n      const v = get(n.path, scope);\n      const truthy = Array.isArray(v) ? v.length > 0 : !!v;\n      out += evalNodes(truthy ? n.body : n.no, scope);\n    } else if (n.kind === 'each') {\n      const list = get(n.path, scope);\n      if (!Array.isArray(list)) { warnings.add(`#each ${n.path} is not an array`); continue; }\n      list.forEach((item, i) => { out += evalNodes(n.body, [...scope, { value: item, number: i + 1 }]); });\n    }\n  }\n  return out;\n}\n\nlet html;\ntry {\n  html = evalNodes(parse(ctx.template_html).body, [{ value: { ...ctx.render_data, document_number: number }, number: 0 }]);\n} catch (err) { return fail(String(err.message || err)); }\n\nconst binary = { data: await this.helpers.prepareBinaryData(Buffer.from(html, 'utf8'), 'index.html', 'text/html') };\nreturn [{ json: { ...ctx, ok: true, document_number: number, warnings: [...warnings], html_bytes: Buffer.byteLength(html) }, binary }];"
+      },
+      "id": "g-21",
+      "name": "Render Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4680,
+        40
+      ],
+      "notes": "A small, auditable template engine (no external library). Every substituted value is HTML-escaped, so merge data can never inject markup. Builds the index.html file Gotenberg expects."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-22",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-22",
+      "name": "Render OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4940,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.GOTENBERG_API_URL.replace(/\\/+$/, '') }}/forms/chromium/convert/html",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.GOTENBERG_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.PDF_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "g-23",
+      "name": "Render PDF (Gotenberg)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5200,
+        40
+      ],
+      "notes": "POST multipart/form-data, one file part named \"files\" called index.html (that is Gotenberg's contract). NOT neverError: a 5xx must throw so retryOnFail actually retries (3 tries). A final failure continues to the failure path.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Render Document').first().json;\nconst r = $input.first();\nconst fail = (detail) => [{ json: { ...ctx, ok: false, failure_stage: 'pdf', failure_detail: detail } }];\nif (r.json.error) return fail('renderer error: ' + String(r.json.error.message || r.json.error).slice(0, 200));\nif (r.json.statusCode !== 200 || !r.binary || !r.binary.data) return fail('renderer returned status ' + r.json.statusCode);\nconst buf = await this.helpers.getBinaryDataBuffer(0, 'data');\nif (buf.length < 8 || buf.slice(0, 4).toString('latin1') !== '%PDF') return fail('renderer response is not a PDF');\nr.binary.data.fileName = `${ctx.document_number}.pdf`;\nr.binary.data.mimeType = 'application/pdf';\nreturn [{ json: { ...ctx, ok: true, pdf_bytes: buf.length }, binary: { data: r.binary.data } }];"
+      },
+      "id": "g-24",
+      "name": "Check PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5460,
+        40
+      ],
+      "notes": "Does not trust a 200: the bytes must actually start with %PDF before anything is archived or returned."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-25",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-25",
+      "name": "PDF OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5720,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-26",
+              "leftValue": "={{ $json.mode === 'preview' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-26",
+      "name": "Preview Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5980,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "automatically",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Disposition",
+                "value": "inline; filename=\"preview.pdf\""
+              },
+              {
+                "name": "X-Warning-Count",
+                "value": "={{ String(($json.warnings || []).length) }}"
+              },
+              {
+                "name": "X-Warnings",
+                "value": "={{ encodeURIComponent(JSON.stringify($json.warnings || [])).slice(0, 1500) }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "g-27",
+      "name": "Respond PDF (Preview)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        6240,
+        -140
+      ],
+      "notes": "Preview returns the PDF itself. Template warnings (unresolved fields etc.) ride along in X-Warnings (URL-encoded JSON)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.DOC_STORE_API_URL.replace(/\\/+$/, '') }}/archive",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "pdf",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "document_number",
+              "value": "={{ $json.document_number }}"
+            },
+            {
+              "name": "document_type",
+              "value": "={{ $json.document_type }}"
+            },
+            {
+              "name": "idempotency_key",
+              "value": "={{ $json.idempotency_key }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.PDF_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-28",
+      "name": "Archive PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6240,
+        100
+      ],
+      "notes": "Uploads the actual PDF (multipart: a \"pdf\" file part plus the fields). Must be idempotent per document_number, because it can be retried. Not neverError, so 5xx retries.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Check PDF').first().json;\nconst r = $input.first().json;\nconst archive_url = r.body && typeof r.body === 'object' ? r.body.archive_url : null;\nif (r.error || !(r.statusCode >= 200 && r.statusCode < 300) || !archive_url)\n  return [{ json: { ...ctx, ok: false, failure_stage: 'archive', failure_detail: r.error ? String(r.error.message || r.error).slice(0, 200) : `archive returned status ${r.statusCode}` } }];\nreturn [{ json: { ...ctx, ok: true, archive_url } }];"
+      },
+      "id": "g-29",
+      "name": "Check Archive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6500,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-30",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-30",
+      "name": "Archived?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6760,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.DOC_STORE_API_URL.replace(/\\/+$/, '') + '/generations/' + encodeURIComponent($json.idempotency_key) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: 'completed', archive_url: $json.archive_url } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}"
+        }
+      },
+      "id": "g-31",
+      "name": "Mark Completed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7020,
+        40
+      ],
+      "notes": "Flips the record to completed (idempotent). If even this fails after retries the document is still delivered; the response carries a warning and ops are alerted.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst ctx = $('Check Archive').first().json;\nconst r = $input.first().json;\nconst warnings = [...(ctx.warnings || [])];\nconst record_failed = !!r.error;\nif (record_failed) warnings.push('record_status_update_failed: document is archived but its record is still pending; ops alerted');\nconst R = $('Document Rules').first().json.rules;\nconst send_email = !!C.SEND_EMAIL && !!(ctx.recipient && ctx.recipient.email) && !R.no_email_types.includes(ctx.document_type);   // Document Rules: some types are never emailed\nreturn [{ json: { ...ctx, warnings, record_failed, send_email } }];"
+      },
+      "id": "g-32",
+      "name": "Prepare Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-33",
+              "leftValue": "={{ $json.send_email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-33",
+      "name": "Send Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7540,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.NOTIFY_API_URL.replace(/\\/+$/, '') }}/send-document-email",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { to: $json.recipient.email, recipient_name: $json.recipient.name || null, document_number: $json.document_number, document_type: $json.document_type, template_id: $json.template_id, archive_url: $json.archive_url } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-34",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7800,
+        -20
+      ],
+      "notes": "Delivery is best-effort and isolated: if this fails the document is safe and the caller still gets 201 (with a warning).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Prepare Delivery').first().json;\nconst r = $input.first().json;\nconst email_failed = !!r.error || !(r.statusCode >= 200 && r.statusCode < 300);\nconst warnings = [...ctx.warnings];\nif (email_failed) warnings.push(`delivery_email_failed: ${ctx.recipient.email}`);\nreturn [{ json: { ...ctx, warnings, email_failed } }];"
+      },
+      "id": "g-35",
+      "name": "Check Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8060,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-36",
+              "leftValue": "={{ $json.email_failed && !!$('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-36",
+      "name": "Delivery Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8320,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ \"{}\" }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: ':warning: Document ' + $('Check Delivery').first().json.document_number + ' was generated and archived, but the email to ' + $('Check Delivery').first().json.recipient.email + ' failed. The document is safe; it needs a manual resend.' } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-37",
+      "name": "Alert Ops (Delivery Failed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8580,
+        -80
+      ],
+      "notes": "Blank SLACK_WEBHOOK_URL = no alerts (this node is skipped).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.AUDIT_API_URL.replace(/\\/+$/, '') }}/log",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { event: 'document_generated', document_number: $('Prepare Delivery').first().json.document_number, document_type: $('Prepare Delivery').first().json.document_type, idempotency_key: $('Prepare Delivery').first().json.idempotency_key, template_id: $('Prepare Delivery').first().json.template_id, archive_url: $('Prepare Delivery').first().json.archive_url, warnings: $('Prepare Delivery').first().json.warnings } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-38",
+      "name": "Write Audit Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8840,
+        40
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Prepare Delivery').first().json;\nconst r = $input.first().json;\nlet email = 'skipped', warnings = [...ctx.warnings];\nif (ctx.send_email) {\n  try { const d = $('Check Delivery').first().json; email = d.email_failed ? 'failed' : 'sent'; warnings = [...d.warnings]; } catch (err) { email = 'unknown'; }\n}\nif (r.error) warnings.push('audit_log_failed');\nreturn [{ json: { ok: true, http_status: 201, response_body: {\n  status: 'completed', document_number: ctx.document_number, archive_url: ctx.archive_url,\n  delivery: { email }, warnings } } }];"
+      },
+      "id": "g-39",
+      "name": "Build Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9100,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $input.first().json;\nconst retry_hint = f.mode === 'generate' ? 'The generation record is marked failed_needs_retry. Re-send the same request with the same idempotency_key to retry; the same document number is reused.' : undefined;\nconst map = {\n  render: { status: 500, error: 'template_render_failed' },\n  pdf: { status: 502, error: 'pdf_generation_failed' },\n  archive: { status: 502, error: 'archive_failed' },\n};\nconst m = map[f.failure_stage] || { status: 500, error: 'generation_failed' };\nconst alert = f.failure_stage === 'archive'\n  ? `:rotating_light: Document ${f.document_number} rendered but could not be archived. The caller got a 502, not a success. The record is failed_needs_retry; the same idempotency_key will retry it.`\n  : null;\nreturn [{ json: { ...f, http_status: m.status, response_body: { error: m.error, document_number: f.mode === 'generate' ? f.document_number : null, detail: f.failure_detail, ...(retry_hint ? { retry: retry_hint } : {}) }, alert_text: alert } }];"
+      },
+      "id": "g-40",
+      "name": "Failure Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7020,
+        260
+      ],
+      "notes": "All three failure stages (render, pdf, archive) land here and become one consistent 5xx."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-41",
+              "leftValue": "={{ $json.mode === 'generate' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-41",
+      "name": "Failed In Generate Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.DOC_STORE_API_URL.replace(/\\/+$/, '') + '/generations/' + encodeURIComponent($json.idempotency_key) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: 'failed_needs_retry' } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-42",
+      "name": "Mark Failed (Needs Retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7540,
+        200
+      ],
+      "notes": "Releases the idempotency key for a retry. If this call itself fails the caller still gets the 5xx; the record stays pending until the store expires it (see README, service contract).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Failure Context').first().json.response_body }}",
+        "options": {
+          "responseCode": "={{ $('Failure Context').first().json.http_status }}"
+        }
+      },
+      "id": "g-43",
+      "name": "Respond Failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        7800,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-44",
+              "leftValue": "={{ !!$('Failure Context').first().json.alert_text && !!$('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-44",
+      "name": "Failure Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8060,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ \"{}\" }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $('Failure Context').first().json.alert_text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-45",
+      "name": "Alert Ops (Archive Failed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8320,
+        260
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Template-Driven Document Generator\n**Setup (about 5 minutes)**\n1. Run the reference services: `node 11-template-document-generator-mock-server.js` (port 4100). In production, point CONFIG at your own services instead.\n2. Open **CONFIG**. Defaults already target the mock on localhost:4100. If n8n runs in Docker, use `host.docker.internal`.\n3. Activate and POST to `/webhook/documents/generate` or `/webhook/documents/preview`.\n\n**Everything configurable lives in CONFIG.** No node has a hardcoded URL, vendor or credential.\n\n**Flow:** validate -> fetch template -> check fields and invoice totals -> allocate number (generate only) -> render -> PDF -> archive -> mark completed -> email + audit -> 201.\nAnything that fails after a number exists marks the record `failed_needs_retry`, so the same idempotency_key can safely retry.",
+        "height": 330,
+        "width": 640,
+        "color": 4
+      },
+      "id": "g-46",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Services this workflow calls (HTTP contract in the README)\n- Template store: `GET /templates/{id}?version=`\n- Document store: `POST /generations` (atomic), `POST /generations/{key}`, `POST /archive`\n- Renderer: Gotenberg `POST /forms/chromium/convert/html`\n- Notify: `POST /send-document-email`\n- Audit: `POST /log`\n- Alerts (optional): a Slack-compatible incoming webhook",
+        "height": 210,
+        "width": 520,
+        "color": 5
+      },
+      "id": "g-47",
+      "name": "Service Contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3100,
+        -330
+      ]
+    }
+  ],
+  "connections": {
+    "Generate Document Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Generate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preview Document Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Preview Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Generate Request": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Preview Request": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Document Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Document Rules": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Template",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Template": {
+      "main": [
+        [
+          {
+            "node": "Check Template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Template": {
+      "main": [
+        [
+          {
+            "node": "Template OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Template OK?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Document": {
+      "main": [
+        [
+          {
+            "node": "Document OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Document OK?": {
+      "main": [
+        [
+          {
+            "node": "Generate Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Mode?": {
+      "main": [
+        [
+          {
+            "node": "Create Generation Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Render Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Generation Record": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Record": {
+      "main": [
+        [
+          {
+            "node": "Route by Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Record Outcome": {
+      "main": [
+        [
+          {
+            "node": "Render Document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Retry": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Claim": {
+      "main": [
+        [
+          {
+            "node": "Claim Won?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Won?": {
+      "main": [
+        [
+          {
+            "node": "Render Document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Document": {
+      "main": [
+        [
+          {
+            "node": "Render OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render OK?": {
+      "main": [
+        [
+          {
+            "node": "Render PDF (Gotenberg)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render PDF (Gotenberg)": {
+      "main": [
+        [
+          {
+            "node": "Check PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check PDF": {
+      "main": [
+        [
+          {
+            "node": "PDF OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF OK?": {
+      "main": [
+        [
+          {
+            "node": "Preview Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preview Mode?": {
+      "main": [
+        [
+          {
+            "node": "Respond PDF (Preview)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Archive PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive PDF": {
+      "main": [
+        [
+          {
+            "node": "Check Archive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Archive": {
+      "main": [
+        [
+          {
+            "node": "Archived?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archived?": {
+      "main": [
+        [
+          {
+            "node": "Mark Completed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Completed": {
+      "main": [
+        [
+          {
+            "node": "Prepare Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Delivery": {
+      "main": [
+        [
+          {
+            "node": "Send Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email?": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Check Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Delivery": {
+      "main": [
+        [
+          {
+            "node": "Delivery Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivery Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "Alert Ops (Delivery Failed)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Ops (Delivery Failed)": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Audit Log": {
+      "main": [
+        [
+          {
+            "node": "Build Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure Context": {
+      "main": [
+        [
+          {
+            "node": "Failed In Generate Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failed In Generate Mode?": {
+      "main": [
+        [
+          {
+            "node": "Mark Failed (Needs Retry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Failed (Needs Retry)": {
+      "main": [
+        [
+          {
+            "node": "Respond Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Failure": {
+      "main": [
+        [
+          {
+            "node": "Failure Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "Alert Ops (Archive Failed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

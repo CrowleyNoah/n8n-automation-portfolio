@@ -1,0 +1,1446 @@
+{
+  "name": "Voice Intake Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "voice/intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-0",
+      "name": "Voice Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "POST {audio_base64, audio_format, session_id?, turn_id?, duration_seconds?}. One reply node serves every path.",
+      "webhookId": "voice-intake"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "SESSION_API_URL",
+              "value": "http://localhost:4400",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "STT_API_URL",
+              "value": "http://localhost:4400/transcribe",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "AGENT_API_URL",
+              "value": "http://localhost:4400/chat",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "TTS_API_URL",
+              "value": "http://localhost:4400/synthesize",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "QA_ARCHIVE_API_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "STT_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-7",
+              "name": "AGENT_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-8",
+              "name": "TTS_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-9",
+              "name": "VOICE_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-10",
+              "name": "STT_LANGUAGE",
+              "value": "auto",
+              "type": "string"
+            },
+            {
+              "id": "cfg-11",
+              "name": "SUPPORTED_LANGUAGES_JSON",
+              "value": "[\"en\", \"es\", \"fr\", \"de\"]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-12",
+              "name": "DEFAULT_LANGUAGE",
+              "value": "en",
+              "type": "string"
+            },
+            {
+              "id": "cfg-13",
+              "name": "MIN_CONFIDENCE_LOGPROB",
+              "value": -1.0,
+              "type": "number"
+            },
+            {
+              "id": "cfg-14",
+              "name": "NO_SPEECH_THRESHOLD",
+              "value": 0.6,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "NON_SPEECH_PATTERNS_JSON",
+              "value": "[\"^[\\\\s.\\u2026,!?-]*$\", \"^[\\\\[(]?(blank[_ ]audio|silence|no speech|inaudible)[\\\\])]?[.!]?$\", \"^[\\\\[(*\\u266a ]*(music|noise|applause|laughter)[\\\\])*\\u266a ]*$\"]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-16",
+              "name": "ALLOWED_FORMATS_JSON",
+              "value": "[\"wav\", \"mp3\", \"ogg\", \"webm\"]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-17",
+              "name": "CHECK_AUDIO_SIGNATURE",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-18",
+              "name": "MAX_AUDIO_BYTES",
+              "value": 10485760,
+              "type": "number"
+            },
+            {
+              "id": "cfg-19",
+              "name": "MIN_DURATION_SECONDS",
+              "value": 0.3,
+              "type": "number"
+            },
+            {
+              "id": "cfg-20",
+              "name": "MAX_DURATION_SECONDS",
+              "value": 120,
+              "type": "number"
+            },
+            {
+              "id": "cfg-21",
+              "name": "MAX_HISTORY_TURNS",
+              "value": 10,
+              "type": "number"
+            },
+            {
+              "id": "cfg-22",
+              "name": "TTS_ENABLED",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-23",
+              "name": "TTS_MAX_CHARS",
+              "value": 2000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-24",
+              "name": "MAX_TTS_AUDIO_BYTES",
+              "value": 10485760,
+              "type": "number"
+            },
+            {
+              "id": "cfg-25",
+              "name": "DEGRADED_STATUS_CODE",
+              "value": 503,
+              "type": "number"
+            },
+            {
+              "id": "cfg-26",
+              "name": "MSG_STT_FAILED",
+              "value": "Sorry, I'm having trouble understanding audio right now. Please try again in a moment.",
+              "type": "string"
+            },
+            {
+              "id": "cfg-27",
+              "name": "MSG_CLARIFY",
+              "value": "Sorry, I didn't catch that. Could you say that again?",
+              "type": "string"
+            },
+            {
+              "id": "cfg-28",
+              "name": "MSG_UNSUPPORTED_LANGUAGE",
+              "value": "Sorry, I don't support that language yet. Please try again in English, Spanish, French, or German.",
+              "type": "string"
+            },
+            {
+              "id": "cfg-29",
+              "name": "MSG_AGENT_FAILED",
+              "value": "Sorry, I'm having trouble responding right now. Please try again shortly.",
+              "type": "string"
+            },
+            {
+              "id": "cfg-30",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 8000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-31",
+              "name": "STT_TIMEOUT_MS",
+              "value": 30000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-32",
+              "name": "AGENT_TIMEOUT_MS",
+              "value": 20000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-33",
+              "name": "TTS_TIMEOUT_MS",
+              "value": 20000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. Service URLs, auth, languages, confidence limits, messages, timeouts. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// VOICE RULES: the node for what callers HEAR and what the agent is told. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. Every request is checked against it, and a mistake\n// gives a clear 500 (voice_misconfigured, lines start \"Rules:\") before any audio is processed.\n// What you cannot change here, on purpose: audio checks, the confidence / silence / language\n// judgement, \"only real answers are saved to the conversation\", the TTS audio checks, and that\n// failures stay honest (a degraded reply is still marked degraded).\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst rules = {\n  // The fixed sentences callers hear, per language (2-letter code of the language the caller spoke).\n  // Anything you leave out uses the CONFIG.MSG_* text. Keys: stt_failed, clarify, unsupported_language, agent_failed\n  messages: {\n    // clarify: { es: 'Perd\u00f3n, no le entend\u00ed. \u00bfPuede repetirlo?', fr: 'D\u00e9sol\u00e9, pouvez-vous r\u00e9p\u00e9ter ?' },\n  },\n\n  // Fixed answers for phrases you never want to leave to the agent (no agent call, nothing saved).\n  // The first shortcut whose match_any text appears in what the caller said (ignoring case) wins.\n  // reply: text, or { default: 'text', es: 'texto' } chosen by the caller's language.\n  shortcuts: [\n    // { name: 'handoff', match_any: ['speak to a human', 'operator'], reply: 'Connecting you to a person now.' },\n  ],\n\n  // How to PRONOUNCE things: applied only to the text sent to text-to-speech, never to the written reply.\n  speech_replacements: [\n    // { from: 'Dr.', to: 'Doctor' },\n  ],\n\n  // Fixed facts sent to the agent with every turn as \"context\" (text, numbers or true/false).\n  agent_context: {\n    // channel: 'phone', brand: 'Acme',\n  },\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst norm = { messages: pick(rules, 'messages', {}), shortcuts: pick(rules, 'shortcuts', []), speech_replacements: pick(rules, 'speech_replacements', []), agent_context: pick(rules, 'agent_context', {}),\n  _is_obj: rules !== null && typeof rules === 'object' && !Array.isArray(rules), _raw_keys: Object.keys(rules || {}) };\nreturn [{ json: { ...$input.first().json, rules: norm } }];\n"
+      },
+      "id": "g-2",
+      "name": "Voice Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "EDIT ME for what callers hear and what the agent is told: fixed sentences per language, shortcut phrases answered without the agent, pronunciation fixes for speech, fixed context sent to the agent. Data only; checked on every request. Audio checks, confidence/silence/language judgement and saving rules cannot be changed here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst req = $('Voice Intake Webhook').first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) } } }];\n\nif (C.VOICE_AUTH_TOKEN && (req.headers || {})['x-voice-token'] !== C.VOICE_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity\nconst bad = [];\nfor (const k of ['SESSION_API_URL', 'STT_API_URL', 'AGENT_API_URL', 'TTS_API_URL']) if (!/^https?:\\/\\//.test(C[k] || '')) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.QA_ARCHIVE_API_URL && !/^https?:\\/\\//.test(C.QA_ARCHIVE_API_URL)) bad.push('CONFIG.QA_ARCHIVE_API_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'STT_HEADERS_JSON', 'AGENT_HEADERS_JSON', 'TTS_HEADERS_JSON']) { try { if (!isObj(JSON.parse(C[k] || '{}'))) throw 0; } catch (e) { bad.push(`CONFIG.${k} must be a JSON object`); } }\nconst arr = (k) => { try { const a = JSON.parse(C[k]); if (!Array.isArray(a) || !a.length) throw 0; return a; } catch (e) { bad.push(`CONFIG.${k} must be a non-empty JSON array`); return []; } };\nconst langs = arr('SUPPORTED_LANGUAGES_JSON'); const formats = arr('ALLOWED_FORMATS_JSON');\nif (formats.some((f) => !['wav', 'mp3', 'ogg', 'webm'].includes(f))) bad.push('CONFIG.ALLOWED_FORMATS_JSON may only contain wav, mp3, ogg, webm');\nif (langs.length && !langs.includes(C.DEFAULT_LANGUAGE)) bad.push('CONFIG.DEFAULT_LANGUAGE must be one of SUPPORTED_LANGUAGES_JSON');\ntry { JSON.parse(C.NON_SPEECH_PATTERNS_JSON).forEach((p) => new RegExp(p, 'i')); } catch (e) { bad.push('CONFIG.NON_SPEECH_PATTERNS_JSON must be a JSON array of valid regular expressions'); }\nconst num = (k) => Number(C[k]);\nfor (const k of ['MAX_AUDIO_BYTES', 'MAX_DURATION_SECONDS', 'MAX_HISTORY_TURNS', 'TTS_MAX_CHARS', 'MAX_TTS_AUDIO_BYTES', 'REQUEST_TIMEOUT_MS', 'STT_TIMEOUT_MS', 'AGENT_TIMEOUT_MS', 'TTS_TIMEOUT_MS']) if (!(num(k) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (!(num('MIN_DURATION_SECONDS') >= 0 && num('MIN_DURATION_SECONDS') < num('MAX_DURATION_SECONDS'))) bad.push('CONFIG.MIN_DURATION_SECONDS must be >= 0 and below MAX_DURATION_SECONDS');\nif (!(num('NO_SPEECH_THRESHOLD') > 0 && num('NO_SPEECH_THRESHOLD') <= 1)) bad.push('CONFIG.NO_SPEECH_THRESHOLD must be between 0 and 1');\nif (!(num('MIN_CONFIDENCE_LOGPROB') <= 0)) bad.push('CONFIG.MIN_CONFIDENCE_LOGPROB must be 0 or negative (average log-probability, e.g. -1.0)');\nif (!(Number.isInteger(num('DEGRADED_STATUS_CODE')) && num('DEGRADED_STATUS_CODE') >= 200 && num('DEGRADED_STATUS_CODE') <= 599)) bad.push('CONFIG.DEGRADED_STATUS_CODE must be an HTTP status between 200 and 599');\nfor (const k of ['MSG_STT_FAILED', 'MSG_CLARIFY', 'MSG_UNSUPPORTED_LANGUAGE', 'MSG_AGENT_FAILED']) if (!String(C[k] || '').trim()) bad.push(`CONFIG.${k} must not be empty (it is what the caller hears)`);\n// ---- the Voice Rules node\n{\n  const R = $('Voice Rules').first().json.rules;\n  const rb = (m) => bad.push('Rules: ' + m);\n  const str = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;\n  const LANG = /^[a-z]{2}$/;\n  const langMap = (v, allowDefault) => isObj(v) && Object.keys(v).length >= 1 && Object.keys(v).length <= 30 && Object.entries(v).every(([k, t]) => (LANG.test(k) || (allowDefault && k === 'default')) && str(t, 1, 500));\n  if (!R._is_obj) rb('rules must be an object');\n  else {\n    for (const k of R._raw_keys) if (!['messages', 'shortcuts', 'speech_replacements', 'agent_context'].includes(k)) rb(`${k} is not a known setting (messages, shortcuts, speech_replacements, agent_context)`);\n    if (!isObj(R.messages)) rb('messages must be an object');\n    else for (const [k, v] of Object.entries(R.messages)) {\n      if (!['stt_failed', 'clarify', 'unsupported_language', 'agent_failed'].includes(k)) rb(`messages.${k} is not a known message (stt_failed, clarify, unsupported_language, agent_failed)`);\n      else if (!langMap(v)) rb(`messages.${k} must be an object of 2-letter language code -> text (1 to 500 characters)`);\n    }\n    if (!Array.isArray(R.shortcuts) || R.shortcuts.length > 20) rb('shortcuts must be a list of at most 20 shortcuts');\n    else {\n      const names = new Set();\n      R.shortcuts.forEach((s, i) => {\n        const w = `shortcuts[${i}]`;\n        if (!isObj(s)) { rb(`${w} must be an object`); return; }\n        for (const k of Object.keys(s)) if (!['name', 'match_any', 'reply'].includes(k)) rb(`${w}.${k} is not a known setting (name, match_any, reply)`);\n        if (typeof s.name !== 'string' || !/^[a-z][a-z0-9_]{0,39}$/.test(s.name)) rb(`${w}.name must be lower-case letters, digits and _ (1 to 40 characters)`);\n        else if (names.has(s.name)) rb(`${w}.name \"${s.name}\" is used twice`); else names.add(s.name);\n        if (!(Array.isArray(s.match_any) && s.match_any.length >= 1 && s.match_any.length <= 30 && s.match_any.every((x) => str(x, 2, 100)))) rb(`${w}.match_any must be a list of 1 to 30 phrases of 2 to 100 characters`);\n        if (typeof s.reply === 'string') { if (!str(s.reply, 1, 500)) rb(`${w}.reply must be 1 to 500 characters`); }\n        else if (!(langMap(s.reply, true) && typeof s.reply.default === 'string')) rb(`${w}.reply must be text, or an object of language code -> text that includes \"default\"`);\n      });\n    }\n    if (!Array.isArray(R.speech_replacements) || R.speech_replacements.length > 50 || !R.speech_replacements.every((x) => isObj(x) && Object.keys(x).every((k) => ['from', 'to'].includes(k)) && str(x.from, 1, 50) && str(x.to, 0, 100))) rb('speech_replacements must be a list of at most 50 entries { from: 1 to 50 characters, to: up to 100 characters }');\n    if (!isObj(R.agent_context) || Object.keys(R.agent_context).length > 20 || !Object.entries(R.agent_context).every(([k, v]) => /^[a-z][a-z0-9_]{0,39}$/.test(k) && (typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || str(v, 0, 200)))) rb('agent_context must be an object of at most 20 entries: lower-case name -> text (up to 200 characters), number or true/false');\n  }\n}\nif (bad.length) return reject(500, 'voice_misconfigured', bad);\n\n// ---- request shape\nif (!isObj(req.body)) return reject(400, 'validation_failed', ['body must be a JSON object']);\nconst b = req.body;\nconst errors = [];\nconst fmt = typeof b.audio_format === 'string' ? b.audio_format.trim().toLowerCase() : '';\nif (!formats.includes(fmt)) errors.push(`audio_format must be one of: ${formats.join(', ')}`);\n\nlet b64 = typeof b.audio_base64 === 'string' ? b.audio_base64.replace(/^data:[^;,]*;base64,/i, '').replace(/\\s+/g, '') : '';\nlet buf = null;\nif (!b64) errors.push('audio_base64 is required (base64-encoded audio)');\nelse if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4 !== 0) errors.push('audio_base64 is not valid base64');\nelse {\n  buf = Buffer.from(b64, 'base64');\n  if (buf.length < 64) errors.push('audio is too small to contain speech');\n  else if (buf.length > num('MAX_AUDIO_BYTES')) errors.push(`audio exceeds the ${num('MAX_AUDIO_BYTES')} byte limit`);\n  else if (C.CHECK_AUDIO_SIGNATURE === true && formats.includes(fmt)) {\n    const h = buf.subarray(0, 12); const s = (a, n) => h.subarray(a, a + n).toString('latin1');\n    const okSig = { wav: s(0, 4) === 'RIFF' && s(8, 4) === 'WAVE', mp3: s(0, 3) === 'ID3' || (h[0] === 0xff && (h[1] & 0xe0) === 0xe0), ogg: s(0, 4) === 'OggS', webm: h[0] === 0x1a && h[1] === 0x45 && h[2] === 0xdf && h[3] === 0xa3 }[fmt];\n    if (!okSig) errors.push(`the audio bytes do not look like ${fmt} (wrong or missing file signature)`);\n  }\n}\nlet duration = null;\nif (b.duration_seconds !== undefined && b.duration_seconds !== null) {\n  if (typeof b.duration_seconds !== 'number' || !Number.isFinite(b.duration_seconds)) errors.push('duration_seconds must be a number');\n  else if (b.duration_seconds < num('MIN_DURATION_SECONDS')) errors.push(`audio is too short (< ${num('MIN_DURATION_SECONDS')}s) to contain speech`);\n  else if (b.duration_seconds > num('MAX_DURATION_SECONDS')) errors.push(`audio exceeds ${num('MAX_DURATION_SECONDS')}s; split it into shorter clips`);\n  else duration = b.duration_seconds;\n}\nconst idField = (k) => { const v = b[k]; if (v === undefined || v === null || v === '') return null; if (typeof v !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(v)) { errors.push(`${k} must be 1-128 characters: letters, digits and . _ : -`); return null; } return v; };\nconst session_id = idField('session_id'), turn_id = idField('turn_id');\nif (errors.length) return reject(400, 'validation_failed', errors);\n\nreturn [{ json: { ok: true, audio_b64: b64, audio_format: fmt, audio_bytes: buf.length, duration_seconds: duration, session_id, turn_id } }];"
+      },
+      "id": "g-3",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "Auth, CONFIG sanity and request shape. The audio is decoded and its file signature checked against the declared format, so garbage never reaches the speech-to-text service."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-4",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-4",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-5",
+              "leftValue": "={{ !!$json.session_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-5",
+      "name": "Has Session ID?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.SESSION_API_URL.replace(/\\/+$/, '') + '/sessions/' + encodeURIComponent($('Validate Request').first().json.session_id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-6",
+      "name": "Fetch Session",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        0
+      ],
+      "notes": "200 {history:[{role,text}]} = continue the conversation. 404 = expired or unknown, start fresh. Anything else = the store is having trouble: carry on without history instead of failing the call.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst V = $('Validate Request').first().json;\nconst r = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nif (!r.error && r.statusCode === 200 && isObj(r.body) && Array.isArray(r.body.history)) {\n  const history = r.body.history.filter((h) => isObj(h) && typeof h.text === 'string' && ['user', 'assistant'].includes(h.role)).map((h) => ({ role: h.role, text: h.text }));\n  return [{ json: { session_id: V.session_id, history, session_status: 'existing', can_save: true } }];\n}\nif (!r.error && r.statusCode === 404) return [{ json: { session_id: null, history: [], session_status: 'expired', can_save: true } }];\nreturn [{ json: { session_id: V.session_id, history: [], session_status: 'unavailable', can_save: false } }];"
+      },
+      "id": "g-7",
+      "name": "Interpret Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        0
+      ],
+      "notes": "existing | expired (unknown or expired id: gets a fresh server-generated id, never reuses the caller's) | unavailable (store down: keep the caller's id, no history, nothing saved)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-8",
+              "leftValue": "={{ $json.session_status === 'expired' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-8",
+      "name": "Needs New Session ID?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "action": "generate",
+        "dataPropertyName": "session_id",
+        "encodingType": "uuid"
+      },
+      "id": "g-9",
+      "name": "Generate Session ID",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        2520,
+        0
+      ],
+      "notes": "Session ids come from n8n's Crypto node (a secure random UUID). They are the only thing protecting a conversation's history, so they must not be guessable. (A Code node cannot use `crypto` in current n8n.)"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { session_id: $json.session_id, history: [], session_status: 'new', can_save: true } }];"
+      },
+      "id": "g-10",
+      "name": "New Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $input.first().json }];"
+      },
+      "id": "g-11",
+      "name": "Session State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        0
+      ],
+      "notes": "One place that holds the session for this turn: existing, new or unavailable. Every later node reads it by name."
+    },
+    {
+      "parameters": {
+        "jsCode": "const V = $('Validate Request').first().json;\nconst mime = { wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', webm: 'audio/webm' }[V.audio_format];\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(V.audio_b64, 'base64'), 'input.' + V.audio_format, mime);\nreturn [{ json: {}, binary: { data: binary } }];"
+      },
+      "id": "g-12",
+      "name": "Prepare Audio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ],
+      "notes": "Builds a proper n8n binary item with the platform helper (a hand-made {data: base64} object is not portable across n8n binary storage modes)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.STT_API_URL }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.STT_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.STT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "language",
+              "value": "={{ $('CONFIG').first().json.STT_LANGUAGE }}"
+            }
+          ]
+        }
+      },
+      "id": "g-13",
+      "name": "Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3640,
+        0
+      ],
+      "notes": "Multipart upload of the audio (field \"file\") plus \"language\". Deliberately NOT neverError: a 5xx throws so retryOnFail really retries (2 tries); after that the error arrives as data and becomes the spoken apology.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 500
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst r = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst out = (outcome, extra = {}) => [{ json: { outcome, transcript: '', language: null, confidence: null, no_speech_prob: null, ...extra } }];\n\nif (r.error || !(r.statusCode >= 200 && r.statusCode < 300) || !isObj(r.body) || typeof r.body.text !== 'string') return out('stt_failed');\n\nconst transcript = r.body.text.replace(/\\s+/g, ' ').trim();\nconst NAMES = { english: 'en', spanish: 'es', french: 'fr', german: 'de', italian: 'it', portuguese: 'pt', dutch: 'nl', japanese: 'ja', chinese: 'zh', korean: 'ko', russian: 'ru', arabic: 'ar', hindi: 'hi' };\nlet lang = typeof r.body.language === 'string' ? r.body.language.trim().toLowerCase() : '';\nlang = NAMES[lang] || lang.split(/[-_]/)[0] || null;\n\nconst segs = Array.isArray(r.body.segments) ? r.body.segments.filter(isObj) : [];\nconst avg = (k) => { const v = segs.map((s) => s[k]).filter((x) => typeof x === 'number' && Number.isFinite(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };\nconst confidence = avg('avg_logprob'), noSpeech = avg('no_speech_prob');\nconst base = { transcript, language: lang, confidence, no_speech_prob: noSpeech };\n\nconst nonSpeech = JSON.parse(C.NON_SPEECH_PATTERNS_JSON).some((p) => new RegExp(p, 'i').test(transcript));\nif (!transcript || nonSpeech || (noSpeech !== null && noSpeech > Number(C.NO_SPEECH_THRESHOLD))) return out('silent', base);\n// Confidence is only judged when the service reports it. An unknown confidence is NOT a bad confidence.\nif (confidence !== null && confidence < Number(C.MIN_CONFIDENCE_LOGPROB)) return out('low_confidence', base);\nif (lang && !JSON.parse(C.SUPPORTED_LANGUAGES_JSON).includes(lang)) return out('unsupported_language', base);\nreturn out('proceed', base);"
+      },
+      "id": "g-14",
+      "name": "Assess Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        0
+      ],
+      "notes": "stt_failed | silent | low_confidence | unsupported_language | proceed. Confidence is judged only when the service reports it (the old code treated \"no segments\" as the worst possible confidence, so a Whisper without segments could never get an answer through). Language names and codes (English, en-US) are normalised."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-15-0",
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "proceed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "proceed"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "canned"
+        }
+      },
+      "id": "g-15",
+      "name": "Route Transcript",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        4200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst T = $input.first().json;\nconst R = $('Voice Rules').first().json.rules;\nconst kind = { stt_failed: 'stt_failed', silent: 'clarify', low_confidence: 'clarify', unsupported_language: 'unsupported_language' }[T.outcome];\nconst custom = T.language && Object.prototype.hasOwnProperty.call(R.messages, kind) && Object.prototype.hasOwnProperty.call(R.messages[kind], T.language) ? R.messages[kind][T.language] : null;\nconst text = custom || { stt_failed: C.MSG_STT_FAILED, silent: C.MSG_CLARIFY, low_confidence: C.MSG_CLARIFY, unsupported_language: C.MSG_UNSUPPORTED_LANGUAGE }[T.outcome];\nreturn [{ json: { outcome: T.outcome, transcript: T.transcript || '', response_text: text, language: custom ? T.language : C.DEFAULT_LANGUAGE, degraded: T.outcome === 'stt_failed', warnings: [], session_saved: false } }];"
+      },
+      "id": "g-16",
+      "name": "Build Canned Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        0
+      ],
+      "notes": "The fixed things the caller hears when we should not or cannot call the agent. Wording is in CONFIG. None of these are saved to the conversation history."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst R = $('Voice Rules').first().json.rules;\nconst T = $('Assess Transcript').first().json;\nconst lang = T.language && JSON.parse(C.SUPPORTED_LANGUAGES_JSON).includes(T.language) ? T.language : C.DEFAULT_LANGUAGE;\nconst low = T.transcript.toLowerCase();\nconst hit = R.shortcuts.find((s) => s.match_any.some((x) => low.includes(x.toLowerCase())));\nif (!hit) return [{ json: { shortcut: false } }];\nconst reply = typeof hit.reply === 'string' ? hit.reply : (Object.prototype.hasOwnProperty.call(hit.reply, lang) ? hit.reply[lang] : hit.reply.default);\nreturn [{ json: { shortcut: true, outcome: 'shortcut', shortcut_name: hit.name, transcript: T.transcript, response_text: reply, language: lang, degraded: false, warnings: [], session_saved: false } }];"
+      },
+      "id": "g-17",
+      "name": "Check Shortcuts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        150
+      ],
+      "notes": "Runs only for a transcript that passed every check (so silence, low confidence and unsupported languages are never shortcut). A match from the Voice Rules shortcuts answers without calling the agent, and is not saved to the conversation."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-18",
+              "leftValue": "={{ $json.shortcut === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-18",
+      "name": "Shortcut?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const S = $input.first().json;\nreturn [{ json: { outcome: 'shortcut', shortcut: S.shortcut_name, transcript: S.transcript, response_text: S.response_text, language: S.language, degraded: false, warnings: [], session_saved: false } }];"
+      },
+      "id": "g-19",
+      "name": "Build Shortcut Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst S = $('Session State').first().json;\nconst T = $('Assess Transcript').first().json;\nconst V = $('Validate Request').first().json;\nconst lang = T.language && JSON.parse(C.SUPPORTED_LANGUAGES_JSON).includes(T.language) ? T.language : C.DEFAULT_LANGUAGE;\nreturn [{ json: { session_id: S.session_id, history: S.history.slice(-2 * Number(C.MAX_HISTORY_TURNS)), message: T.transcript, language: lang, turn_id: V.turn_id, ...(Object.keys($('Voice Rules').first().json.rules.agent_context).length ? { context: $('Voice Rules').first().json.rules.agent_context } : {}) } }];"
+      },
+      "id": "g-20",
+      "name": "Build Agent Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        150
+      ],
+      "notes": "Sends only the most recent MAX_HISTORY_TURNS turns, so a long conversation cannot grow the request forever."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.AGENT_API_URL }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.AGENT_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.AGENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { session_id: $json.session_id, history: $json.history, message: $json.message, language: $json.language, turn_id: $json.turn_id, context: $json.context } }}"
+      },
+      "id": "g-21",
+      "name": "Call Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5320,
+        0
+      ],
+      "notes": "A real JSON body (the old node sent the history array as form text, \"[object Object]\"). No automatic retry: agents can have side effects.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst r = $input.first().json;\nconst T = $('Assess Transcript').first().json;\nconst S = $('Session State').first().json;\nconst reply = r.body && typeof r.body.reply === 'string' ? r.body.reply.trim() : '';\nconst lang = T.language && JSON.parse(C.SUPPORTED_LANGUAGES_JSON).includes(T.language) ? T.language : C.DEFAULT_LANGUAGE;\nif (!r.error && r.statusCode >= 200 && r.statusCode < 300 && reply) return [{ json: { answered: true, outcome: 'answered', transcript: T.transcript, response_text: reply, language: lang, degraded: false, warnings: [] } }];\nconst R = $('Voice Rules').first().json.rules;\nconst customFail = R.messages.agent_failed && Object.prototype.hasOwnProperty.call(R.messages.agent_failed, lang) ? R.messages.agent_failed[lang] : null;\nreturn [{ json: { answered: false, outcome: 'agent_failed', transcript: T.transcript, response_text: customFail || C.MSG_AGENT_FAILED, language: customFail ? lang : C.DEFAULT_LANGUAGE, degraded: true, warnings: [], session_saved: false } }];"
+      },
+      "id": "g-22",
+      "name": "Interpret Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        0
+      ],
+      "notes": "An empty reply is a failure too: speaking nothing (or an empty string to the TTS engine) is not an answer."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-23",
+              "leftValue": "={{ $json.answered === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-23",
+      "name": "Agent Answered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-24",
+              "leftValue": "={{ $('Session State').first().json.can_save === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-24",
+      "name": "Can Save Turn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SESSION_API_URL.replace(/\\/+$/, '') + '/sessions/' + encodeURIComponent($('Session State').first().json.session_id) + '/turns' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { turn_id: $('Validate Request').first().json.turn_id, user_text: $('Interpret Agent').first().json.transcript, assistant_text: $('Interpret Agent').first().json.response_text } }}"
+      },
+      "id": "g-25",
+      "name": "Save Turn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6440,
+        0
+      ],
+      "notes": "Only a real, successful exchange is written to history. Creates the session if it is new. turn_id (optional, from the client) lets the store ignore a retried upload of the same turn.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { save: 'skipped' } }];"
+      },
+      "id": "g-26",
+      "name": "Skip Save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6440,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const A = $('Interpret Agent').first().json;\nconst r = $input.first().json;\nconst saved = r.save !== 'skipped' && !r.error && r.statusCode >= 200 && r.statusCode < 300;\nconst warnings = saved ? [] : [r.save === 'skipped' ? 'session_store_unavailable' : 'session_not_saved'];\nreturn [{ json: { ...A, warnings, session_saved: saved } }];"
+      },
+      "id": "g-27",
+      "name": "Assess Save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        0
+      ],
+      "notes": "If the turn could not be saved the caller still gets the answer, with a warning: the next turn will simply lack this exchange."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst U = $input.first().json;\nconst max = Number(C.TTS_MAX_CHARS);\nlet speak = U.response_text, truncated = false;\nfor (const r of $('Voice Rules').first().json.rules.speech_replacements) speak = speak.split(r.from).join(r.to);\nif (speak.length > max) {\n  let cut = speak.slice(0, max);\n  const floor = Math.floor(max * 0.6);\n  let at = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));\n  if (at >= floor) cut = cut.slice(0, at + 1);\n  else { at = cut.lastIndexOf(' '); if (at >= floor) cut = cut.slice(0, at); }\n  speak = cut.trim(); truncated = true;\n}\nreturn [{ json: { ...U, speak_text: speak, truncated_for_speech: truncated } }];"
+      },
+      "id": "g-28",
+      "name": "Prepare Speech",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7000,
+        0
+      ],
+      "notes": "The spoken text respects the TTS engine's own limit, cut at a sentence (or word) boundary, and nothing extra is read aloud. The full text always goes back in the response."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-29",
+              "leftValue": "={{ $('CONFIG').first().json.TTS_ENABLED === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-29",
+      "name": "TTS Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.TTS_API_URL }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.TTS_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.TTS_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "file"
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $('Prepare Speech').first().json.speak_text, language: $('Prepare Speech').first().json.language } }}"
+      },
+      "id": "g-30",
+      "name": "Synthesize Speech",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7560,
+        0
+      ],
+      "notes": "Not neverError, so a 5xx throws and retryOnFail retries (2 tries). If it still fails the caller gets the text without audio.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 500
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst U = $('Prepare Speech').first().json;\nconst V = $('Validate Request').first().json;\nconst S = $('Session State').first().json;\nconst item = $input.first();\nconst warnings = [...(U.warnings || [])];\nlet audio = null, mime = null;\nif (C.TTS_ENABLED === true) {\n  const bin = item.binary && item.binary.data;\n  if (item.json.error || !bin) warnings.push('tts_failed');\n  else {\n    const buf = await this.helpers.getBinaryDataBuffer(0, 'data');     // works in every n8n binary storage mode\n    if (!/^audio\\//i.test(bin.mimeType || '') || !buf.length || buf.length > Number(C.MAX_TTS_AUDIO_BYTES)) warnings.push('tts_invalid_audio');\n    else { audio = buf.toString('base64'); mime = bin.mimeType; }\n  }\n}\nconst body = { outcome: U.outcome, session_id: S.session_id, session_status: S.session_status, transcript: U.transcript, response_text: U.response_text, language: U.language,\n  has_audio: audio !== null, response_audio_base64: audio, response_audio_mime: mime, truncated_for_speech: U.truncated_for_speech, warnings, ...(U.shortcut ? { shortcut: U.shortcut } : {}) };\nreturn [{ json: { http_status: U.degraded ? Number(C.DEGRADED_STATUS_CODE) : 200, response_body: body,\n  qa: { session_id: S.session_id, outcome: U.outcome, transcript: U.transcript, response_text: U.response_text, language: U.language, has_audio: audio !== null, warnings, created_at: new Date().toISOString() } } }];"
+      },
+      "id": "g-31",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7840,
+        0
+      ],
+      "notes": "Reads the synthesized audio with the platform helper, which works whatever binary storage mode n8n uses (reading $binary.data.data directly is not portable across modes). Rejects an empty, oversized or non-audio response."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-32",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        8120,
+        0
+      ],
+      "notes": "The single reply node. Validation errors, canned replies, failures and answers all build {http_status, response_body} and end here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst qa = $input.first().json.qa;\nif (!C.QA_ARCHIVE_API_URL || !qa) return [];\nreturn [{ json: qa }];"
+      },
+      "id": "g-33",
+      "name": "Expand QA Archive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8400,
+        0
+      ],
+      "notes": "Runs AFTER the reply. Blank QA_ARCHIVE_API_URL = no archiving (voice transcripts are personal data, so the default is off)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.QA_ARCHIVE_API_URL }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}"
+      },
+      "id": "g-34",
+      "name": "Archive Interaction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8680,
+        0
+      ],
+      "notes": "Best effort, after the reply: a slow or dead archive can never delay or break the caller's answer.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Voice Intake Pipeline\n**Setup (about 10 minutes)**\n1. Run the services (a reference implementation is included: `node 08-voice-intake-pipeline-mock-server.js`, port 4400): speech-to-text, an agent, text-to-speech, a session store.\n2. Open **CONFIG**: set `SESSION_API_URL`, `STT_API_URL`, `AGENT_API_URL`, `TTS_API_URL` (the last three are full endpoint URLs). Optional: `VOICE_AUTH_TOKEN`, `QA_ARCHIVE_API_URL`.\n3. Activate, then `POST /webhook/voice/intake` with `{audio_base64, audio_format}`.\n\n**Each turn:** validate (decode + check the file signature) -> session -> transcribe -> judge the transcript -> agent (or a fixed reply) -> save the turn -> speak -> reply -> archive.\n\n\"I couldn't understand you\" is a normal outcome, not an error: silence, low confidence and unsupported languages get a spoken clarification and never reach the agent.",
+        "height": 340,
+        "width": 640,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -520
+      ]
+    }
+  ],
+  "connections": {
+    "Voice Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Voice Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voice Rules": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Has Session ID?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Session ID?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Session ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Session": {
+      "main": [
+        [
+          {
+            "node": "Interpret Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpret Session": {
+      "main": [
+        [
+          {
+            "node": "Needs New Session ID?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs New Session ID?": {
+      "main": [
+        [
+          {
+            "node": "Generate Session ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Session State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Session ID": {
+      "main": [
+        [
+          {
+            "node": "New Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Session": {
+      "main": [
+        [
+          {
+            "node": "Session State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session State": {
+      "main": [
+        [
+          {
+            "node": "Prepare Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Audio": {
+      "main": [
+        [
+          {
+            "node": "Transcribe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe": {
+      "main": [
+        [
+          {
+            "node": "Assess Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assess Transcript": {
+      "main": [
+        [
+          {
+            "node": "Route Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Transcript": {
+      "main": [
+        [
+          {
+            "node": "Check Shortcuts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Canned Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Shortcuts": {
+      "main": [
+        [
+          {
+            "node": "Shortcut?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shortcut?": {
+      "main": [
+        [
+          {
+            "node": "Build Shortcut Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Agent Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Shortcut Response": {
+      "main": [
+        [
+          {
+            "node": "Prepare Speech",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Canned Response": {
+      "main": [
+        [
+          {
+            "node": "Prepare Speech",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Agent Request": {
+      "main": [
+        [
+          {
+            "node": "Call Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Agent": {
+      "main": [
+        [
+          {
+            "node": "Interpret Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpret Agent": {
+      "main": [
+        [
+          {
+            "node": "Agent Answered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Answered?": {
+      "main": [
+        [
+          {
+            "node": "Can Save Turn?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Speech",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can Save Turn?": {
+      "main": [
+        [
+          {
+            "node": "Save Turn",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Turn": {
+      "main": [
+        [
+          {
+            "node": "Assess Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Save": {
+      "main": [
+        [
+          {
+            "node": "Assess Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assess Save": {
+      "main": [
+        [
+          {
+            "node": "Prepare Speech",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Speech": {
+      "main": [
+        [
+          {
+            "node": "TTS Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Synthesize Speech",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthesize Speech": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond": {
+      "main": [
+        [
+          {
+            "node": "Expand QA Archive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand QA Archive": {
+      "main": [
+        [
+          {
+            "node": "Archive Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

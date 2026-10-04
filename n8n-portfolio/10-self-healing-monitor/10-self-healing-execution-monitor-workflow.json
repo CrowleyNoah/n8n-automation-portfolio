@@ -1,0 +1,3443 @@
+{
+  "name": "Self-Healing Execution Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "g-0",
+      "name": "Poll Schedule (Every 5 Min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "The cycle. The interval is a node setting (n8n does not allow expressions here), so change it on this node if you want a different cadence."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "monitor/check-now",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "Manual Check Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        150
+      ],
+      "notes": "POST {force?: true}. Runs one cycle now and returns the digest. force=true pushes through even if another cycle holds the lock.",
+      "webhookId": "monitor-check-now"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { triggered_by: 'schedule', force: false, headers: {} } }];"
+      },
+      "id": "g-2",
+      "name": "Normalize Schedule",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst body = r.body && typeof r.body === 'object' && !Array.isArray(r.body) ? r.body : {};\nreturn [{ json: { triggered_by: 'manual', force: body.force === true, headers: r.headers || {} } }];"
+      },
+      "id": "g-3",
+      "name": "Normalize Manual Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "N8N_API_URL",
+              "value": "http://localhost:5678/api/v1",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "N8N_API_KEY",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "MONITOR_STATE_API_URL",
+              "value": "http://localhost:4200",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "MONITOR_STATE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "MONITOR_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "LOCK_TTL_SECONDS",
+              "value": 600,
+              "type": "number"
+            },
+            {
+              "id": "cfg-7",
+              "name": "BOOTSTRAP_LOOKBACK_MINUTES",
+              "value": 15,
+              "type": "number"
+            },
+            {
+              "id": "cfg-8",
+              "name": "PAGE_SIZE",
+              "value": 100,
+              "type": "number"
+            },
+            {
+              "id": "cfg-9",
+              "name": "MAX_PAGES",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "cfg-10",
+              "name": "MAX_EXECUTIONS_PER_CYCLE",
+              "value": 50,
+              "type": "number"
+            },
+            {
+              "id": "cfg-11",
+              "name": "STORM_THRESHOLD",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "cfg-12",
+              "name": "MAX_RETRIES",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "cfg-13",
+              "name": "BACKOFF_BASE_MINUTES",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "cfg-14",
+              "name": "BACKOFF_MULTIPLIER",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "BACKOFF_JITTER_SECONDS",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "cfg-16",
+              "name": "ALERT_COOLDOWN_MINUTES",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "cfg-17",
+              "name": "MAX_RETRIES_PER_INCIDENT_PER_CYCLE",
+              "value": 10,
+              "type": "number"
+            },
+            {
+              "id": "cfg-18",
+              "name": "IGNORE_MANUAL_EXECUTIONS",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-19",
+              "name": "TRANSIENT_PATTERNS_JSON",
+              "value": "[\"time-?d? ?out\", \"econnreset\", \"econnrefused\", \"enotfound\", \"eai_again\", \"etimedout\", \"socket hang up\", \"closed unexpectedly\", \"perhaps it is offline\", \"rate limit\", \"too many requests\", \"service unavailable\", \"bad gateway\", \"gateway time-?out\", \"temporar\"]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-20",
+              "name": "PERMANENT_PATTERNS_JSON",
+              "value": "[\"unauthori[sz]ed\", \"forbidden\", \"invalid credentials\", \"authorization failed\", \"bad request\", \"not found\", \"could not be found\", \"unprocessable\", \"validation\", \"invalid (input|parameter|value)\", \"credentials? (not|are not) (set|found)\"]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-21",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 15000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-4",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. n8n API address and key, state-service address, Slack, thresholds, backoff, patterns. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// MONITOR RULES: the node for what is special about YOUR workflows. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. Every cycle checks them first; a mistake gives a clear\n// \"monitor_misconfigured\" error (lines start \"Rules:\") before anything is fetched, retried or sent.\n// Rules can only make the monitor MORE careful (fewer retries, never retry, ignore, louder text).\n// What you cannot change here, on purpose: the lock, the time window and watermark, the backoff,\n// storm suppression, the alert cooldown, the recovery check, and the CONFIG retry ceiling.\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst rules = {\n  // Workflows the monitor leaves alone completely. Match by id or by a name pattern (one key per entry).\n  // Example: [{ id: 'abc123' }, { name_regex: '^Test: ' }]\n  ignore_workflows: [],\n  // Per-workflow handling. The first entry that matches wins. Match with id OR name_regex, then any of:\n  //   max_retries (a whole number, never above CONFIG.MAX_RETRIES), auto_retry: false (never retry, page a person),\n  //   alert_prefix (text put in front of the alert title, e.g. ':rotating_light: P1'), note (a line added to the alert).\n  // Example: [{ name_regex: 'Payments', max_retries: 1, alert_prefix: ':rotating_light: P1', note: 'Owner: Dana' }]\n  workflow_overrides: [],\n  // Failures at nodes whose name matches are never auto-retried (use for steps that are not safe to repeat, such as\n  // charging a card). They page a person instead. Example: ['^Charge Card', 'Send Invoice']\n  never_retry_nodes: [],\n  // Wording of the \"needs attention\" alert.\n  alert: {\n    title: 'Workflow needs attention',\n    icon: ':warning:',\n    // Which lines to show, in order. Choose from: workflow, node, reason, error, executions. workflow and reason are required.\n    fields: ['workflow', 'node', 'reason', 'error', 'executions'],\n    // One extra line at the end of every alert, e.g. 'Runbook: https://wiki.example.com/n8n-oncall'.\n    extra_line: '',\n    // Replace the wording for a reason. Keys: permanent_error, unknown_error, retries_exhausted, retry_dispatch_failed,\n    // auto_retry_disabled, retry_blocked_by_rules.\n    reasons: {},\n  },\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst A = pick(rules, 'alert', {});\nconst norm = { ignore_workflows: pick(rules, 'ignore_workflows', []), workflow_overrides: pick(rules, 'workflow_overrides', []), never_retry_nodes: pick(rules, 'never_retry_nodes', []),\n  alert: { title: pick(A, 'title', 'Workflow needs attention'), icon: pick(A, 'icon', ':warning:'), fields: pick(A, 'fields', ['workflow', 'node', 'reason', 'error', 'executions']),\n    extra_line: pick(A, 'extra_line', ''), reasons: pick(A, 'reasons', {}) },\n  _is_obj: rules !== null && typeof rules === 'object' && !Array.isArray(rules), _alert_is_obj: A !== null && typeof A === 'object' && !Array.isArray(A),\n  _raw_keys: Object.keys(rules || {}), _alert_keys: Object.keys(A || {}) };\nreturn [{ json: { ...$input.first().json, rules: norm } }];\n"
+      },
+      "id": "g-5",
+      "name": "Monitor Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "EDIT ME for what is special about your workflows: ignore some, retry others less or never, never retry risky nodes, and the wording of the alert. Data only; checked every cycle. The lock, window, backoff, storm and cooldown logic cannot be changed here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst r = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, triggered_by: r.triggered_by, http_status: status, response_body: { error, ...(details ? { details } : {}) } } }];\n\nif (r.triggered_by === 'manual' && C.MONITOR_AUTH_TOKEN && (r.headers || {})['x-monitor-token'] !== C.MONITOR_AUTH_TOKEN) return reject(401, 'unauthorized');\n\nconst bad = [];\nfor (const k of ['N8N_API_URL', 'MONITOR_STATE_API_URL']) if (!/^https?:\\/\\//.test(C[k] || '')) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (!String(C.N8N_API_KEY || '').trim()) bad.push('CONFIG.N8N_API_KEY is empty (create an API key in n8n: Settings > n8n API)');\nif (C.SLACK_WEBHOOK_URL && !/^https?:\\/\\//.test(C.SLACK_WEBHOOK_URL)) bad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http(s)://');\ntry { if (!isObj(JSON.parse(C.MONITOR_STATE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.MONITOR_STATE_HEADERS_JSON must be a JSON object'); }\nfor (const k of ['TRANSIENT_PATTERNS_JSON', 'PERMANENT_PATTERNS_JSON']) {\n  try { const a = JSON.parse(C[k]); if (!Array.isArray(a)) throw 0; a.forEach((p) => new RegExp(p, 'i')); } catch (e) { bad.push(`CONFIG.${k} must be a JSON array of valid regular expressions`); }\n}\nfor (const k of ['LOCK_TTL_SECONDS', 'BOOTSTRAP_LOOKBACK_MINUTES', 'PAGE_SIZE', 'MAX_PAGES', 'MAX_EXECUTIONS_PER_CYCLE', 'STORM_THRESHOLD', 'MAX_RETRIES',\n  'BACKOFF_BASE_MINUTES', 'BACKOFF_MULTIPLIER', 'ALERT_COOLDOWN_MINUTES', 'MAX_RETRIES_PER_INCIDENT_PER_CYCLE', 'REQUEST_TIMEOUT_MS'])\n  if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (!(Number(C.BACKOFF_JITTER_SECONDS) >= 0)) bad.push('CONFIG.BACKOFF_JITTER_SECONDS must be a number >= 0');\n// ---- the Monitor Rules node\n{\n  const R = $('Monitor Rules').first().json.rules;\n  const rb = (m) => bad.push('Rules: ' + m);\n  const str = (x, max) => typeof x === 'string' && x.length > 0 && x.length <= max && !/[\\r\\n]/.test(x);\n  const rx = (x) => { if (!str(x, 200)) return false; try { new RegExp(x, 'i'); return true; } catch (e) { return false; } };\n  const list = (v, max, f) => Array.isArray(v) && v.length <= max && v.every(f);\n  const matchOk = (o, extra) => isObj(o) && Object.keys(o).every((k) => ['id', 'name_regex', ...extra].includes(k)) && ((o.id !== undefined) !== (o.name_regex !== undefined))\n    && (o.id === undefined || str(o.id, 100)) && (o.name_regex === undefined || rx(o.name_regex));\n  const REASONS = ['permanent_error', 'unknown_error', 'retries_exhausted', 'retry_dispatch_failed', 'auto_retry_disabled', 'retry_blocked_by_rules'];\n  if (!R._is_obj) rb('rules must be an object');\n  else {\n    for (const k of R._raw_keys) if (!['ignore_workflows', 'workflow_overrides', 'never_retry_nodes', 'alert'].includes(k)) rb(`${k} is not a known setting (ignore_workflows, workflow_overrides, never_retry_nodes, alert)`);\n    if (!list(R.ignore_workflows, 100, (o) => matchOk(o, []))) rb('ignore_workflows must be a list of at most 100 entries, each with exactly one of id (text) or name_regex (a valid pattern)');\n    const ovOk = (o) => matchOk(o, ['max_retries', 'auto_retry', 'alert_prefix', 'note'])\n      && (o.max_retries === undefined || (Number.isInteger(o.max_retries) && o.max_retries >= 1 && o.max_retries <= Number(C.MAX_RETRIES)))\n      && (o.auto_retry === undefined || o.auto_retry === false)\n      && (o.alert_prefix === undefined || str(o.alert_prefix, 100)) && (o.note === undefined || str(o.note, 300))\n      && ['max_retries', 'auto_retry', 'alert_prefix', 'note'].some((k) => o[k] !== undefined);\n    if (!list(R.workflow_overrides, 100, ovOk)) rb(`workflow_overrides must be a list of at most 100 entries: exactly one of id or name_regex, plus at least one of max_retries (whole number from 1 to CONFIG.MAX_RETRIES = ${C.MAX_RETRIES}), auto_retry (only false), alert_prefix (text, 100 max), note (text, 300 max)`);\n    if (!list(R.never_retry_nodes, 50, rx)) rb('never_retry_nodes must be a list of at most 50 valid patterns (text)');\n    if (!R._alert_is_obj) rb('alert must be an object');\n    else {\n      for (const k of R._alert_keys) if (!['title', 'icon', 'fields', 'extra_line', 'reasons'].includes(k)) rb(`alert.${k} is not a known setting (title, icon, fields, extra_line, reasons)`);\n      const A = R.alert;\n      if (!str(A.title, 100)) rb('alert.title must be text (1 to 100 characters, one line)');\n      if (!(typeof A.icon === 'string' && A.icon.length <= 50 && !/[\\r\\n]/.test(A.icon))) rb('alert.icon must be one line of text, 50 characters at most (it may be empty)');\n      if (!(Array.isArray(A.fields) && new Set(A.fields).size === A.fields.length && A.fields.every((f) => ['workflow', 'node', 'reason', 'error', 'executions'].includes(f)) && A.fields.includes('workflow') && A.fields.includes('reason'))) rb('alert.fields must be a list of different names from workflow, node, reason, error, executions, and must include workflow and reason');\n      if (!(typeof A.extra_line === 'string' && A.extra_line.length <= 300 && !/[\\r\\n]/.test(A.extra_line))) rb('alert.extra_line must be one line of text, 300 characters at most');\n      if (!isObj(A.reasons) || Object.entries(A.reasons).some(([k, v]) => !REASONS.includes(k) || !str(v, 300))) rb(`alert.reasons must be an object whose names are from ${REASONS.join(', ')} and whose values are one line of text (300 max)`);\n    }\n  }\n}\nif (bad.length) return reject(500, 'monitor_misconfigured', bad);\nreturn [{ json: { ok: true, triggered_by: r.triggered_by, force: r.force, now: Date.now() } }];"
+      },
+      "id": "g-6",
+      "name": "Validate Trigger",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ],
+      "notes": "Auth token (manual calls only) and CONFIG sanity. A broken config says what is wrong instead of failing mysteriously later."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-7",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-7",
+      "name": "Trigger OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-8",
+              "leftValue": "={{ $json.triggered_by === 'manual' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-8",
+      "name": "Rejected Run Is Manual?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "errorMessage": "={{ 'Self-healing monitor misconfigured: ' + JSON.stringify($json.response_body.details || $json.response_body.error) }}"
+      },
+      "id": "g-9",
+      "name": "Fail Scheduled Run (Misconfigured)",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1960,
+        0
+      ],
+      "notes": "A scheduled run with a broken config fails loudly (visible in the Executions list and to n8n's own Error Workflow) rather than silently doing nothing."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-10",
+      "name": "Respond JSON",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        18480,
+        0
+      ],
+      "notes": "Every manual-run answer (rejections, skips, degraded, digest) goes through this node."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/lock' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { ttl_seconds: $('CONFIG').first().json.LOCK_TTL_SECONDS } }}"
+      },
+      "id": "g-11",
+      "name": "Acquire Poll Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        150
+      ],
+      "notes": "Atomic, self-expiring lock: only one cycle runs at a time, and a crashed cycle cannot deadlock future ones (the TTL expires). Returns {acquired, token}.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Validate Trigger').first().json;\nconst r = $input.first().json;\nconst body = r.body && typeof r.body === 'object' ? r.body : {};\nconst base = { triggered_by: ctx.triggered_by, force: ctx.force, now: ctx.now };\nif (r.error || typeof r.statusCode !== 'number' || r.statusCode < 200 || r.statusCode >= 300)\n  return [{ json: { ...base, route: 'degraded', degraded_reason: 'state_service_unavailable', degraded_detail: r.error ? String(r.error.message || r.error).slice(0, 200) : `lock call returned status ${r.statusCode}` } }];\nif (body.acquired === true) return [{ json: { ...base, route: 'proceed', lock_token: body.token || null, forced_through: false } }];\nif (ctx.force) return [{ json: { ...base, route: 'proceed', lock_token: null, forced_through: true } }];\nreturn [{ json: { ...base, route: 'skip', lock_token: null } }];"
+      },
+      "id": "g-12",
+      "name": "Evaluate Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        150
+      ],
+      "notes": "Distinguishes three outcomes: got the lock, another cycle holds it (skip), or the state service itself is down (degraded, NOT mistaken for \"busy\")."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-13-0",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "proceed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "proceed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-13-1",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "skip",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "skip"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-13-2",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "degraded",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "degraded"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "g-13",
+      "name": "Lock Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/last-checked' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-14",
+      "name": "Get Last Checked Timestamp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2520,
+        0
+      ],
+      "notes": "The watermark: where the last fully completed cycle stopped. 404 or null = first run.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst ctx = $('Evaluate Lock').first().json;\nconst r = $input.first().json;\nif (r.error || typeof r.statusCode !== 'number' || (r.statusCode >= 300 && r.statusCode !== 404) || r.statusCode < 200 && r.statusCode !== 404)\n  return [{ json: { ok: false, degraded_reason: 'state_service_unavailable', degraded_detail: r.error ? String(r.error.message || r.error).slice(0, 200) : `last-checked returned status ${r.statusCode}` } }];\nconst body = r.statusCode === 404 ? {} : (r.body || {});\nconst last = Number(body.last_checked_at);\nlet since = Number.isFinite(last) && last > 0 ? last : ctx.now - Number(C.BOOTSTRAP_LOOKBACK_MINUTES) * 60000;\nif (since > ctx.now) since = ctx.now - Number(C.BOOTSTRAP_LOOKBACK_MINUTES) * 60000;   // clock moved backwards: do not skip the future\nreturn [{ json: { ok: true, since, until: ctx.now, cursor: null, bootstrapped: !(Number.isFinite(last) && last > 0) } }];"
+      },
+      "id": "g-15",
+      "name": "Compute Poll Window",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ],
+      "notes": "since = watermark (or a bootstrap lookback on the first run), until = when this cycle started. Window is [since, until)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-16",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-16",
+      "name": "Window OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.N8N_API_URL.replace(/\\/+$/, '') + '/executions?status=error&limit=' + $('CONFIG').first().json.PAGE_SIZE + ($json.cursor ? '&cursor=' + encodeURIComponent($json.cursor) : '') }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $('CONFIG').first().json.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-17",
+      "name": "Fetch Failed Executions Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3360,
+        0
+      ],
+      "notes": "n8n public API: newest first, cursor pagination. The API has no \"since\" filter, so the time window is applied in the next node.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst win = $('Compute Poll Window').first().json;\nconst r = $input.first().json;\nconst pageNo = $runIndex + 1;\nconst ok = !r.error && typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300 && r.body && Array.isArray(r.body.data);\nif (!ok) return [{ json: { page_ok: false, more: false, degraded_reason: 'n8n_api_unavailable',\n  degraded_detail: r.error ? String(r.error.message || r.error).slice(0, 200) : `n8n API returned status ${r.statusCode}` } }];\n\nconst ts = (e) => Date.parse(e.stoppedAt || e.startedAt || '') || 0;\nlet all = [];\nfor (let i = 0; i <= $runIndex; i++) all = all.concat((($('Fetch Failed Executions Page').first(0, i).json.body || {}).data) || []);\nconst page = r.body.data;\nconst oldest = page.length ? ts(page[page.length - 1]) : 0;\nconst nextCursor = r.body.nextCursor || null;\nconst windowCovered = page.length === 0 || oldest < win.since;        // newest-first: once a page reaches before `since`, older pages are irrelevant\nconst hitCap = !!nextCursor && !windowCovered && pageNo >= Number(C.MAX_PAGES);\nconst more = !!nextCursor && !windowCovered && pageNo < Number(C.MAX_PAGES);\n\nconst selfId = $workflow.id;\nconst executions = all.filter((e) => {\n  const t = ts(e);\n  if (!(t >= win.since && t < win.until)) return false;\n  if (e.retrySuccessId) return false;                                        // already retried successfully\n  if (e.workflowId === selfId) return false;                                 // the monitor does not monitor itself (use n8n's Error Workflow for that)\n  if (C.IGNORE_MANUAL_EXECUTIONS && e.mode === 'manual') return false;       // test runs from the editor\n  return true;\n});\nreturn [{ json: { page_ok: true, more, next_cursor: nextCursor, pages_fetched: pageNo, truncated_pages: hitCap, executions } }];"
+      },
+      "id": "g-18",
+      "name": "Accumulate Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        0
+      ],
+      "notes": "Collects every page fetched so far (by reading all runs of the fetch node), applies the time window, and drops executions that were already retried successfully, are manual test runs, or belong to the monitor itself."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-19",
+              "leftValue": "={{ $json.more }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-19",
+      "name": "More Pages?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { cursor: $json.next_cursor } }];"
+      },
+      "id": "g-20",
+      "name": "Next Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $input.first().json;\nif (!t.page_ok) return [{ json: { page_ok: false, degraded_reason: t.degraded_reason, degraded_detail: t.degraded_detail } }];\nconst execs = t.executions;\nconst distinct = new Set(execs.map((e) => e.workflowId));\nreturn [{ json: { page_ok: true, executions: execs, total_failed: execs.length, distinct_workflow_count: distinct.size,\n  is_storm: distinct.size >= Number(C.STORM_THRESHOLD), truncated_pages: t.truncated_pages, pages_fetched: t.pages_fetched } }];"
+      },
+      "id": "g-21",
+      "name": "Assess Failure Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        150
+      ],
+      "notes": "Storm check: STORM_THRESHOLD or more distinct workflows failing in one window = probably one shared outage."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-22",
+              "leftValue": "={{ $json.page_ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-22",
+      "name": "Fetch OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-23",
+              "leftValue": "={{ $json.total_failed > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-23",
+      "name": "Any Failures Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-24",
+              "leftValue": "={{ $json.is_storm }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-24",
+      "name": "Storm Detected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents/' + encodeURIComponent('__storm__') }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-25",
+      "name": "Get Storm Alert State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5320,
+        0
+      ],
+      "notes": "Storm alerts have their own cooldown (kept as a pseudo-incident) so a long outage is one page, not one every cycle.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst a = $('Assess Failure Batch').first().json;\nconst r = $input.first().json;\nconst last = r.statusCode >= 200 && r.statusCode < 300 && r.body ? Number(r.body.last_alerted_at) || 0 : 0;\nconst due = !!C.SLACK_WEBHOOK_URL && (Date.now() - last >= Number(C.ALERT_COOLDOWN_MINUTES) * 60000);\nreturn [{ json: { due, text: `:fire: *Failure storm detected* -- ${a.distinct_workflow_count} different workflows failed in the last poll window (${a.total_failed} executions). Suppressing individual auto-retries to avoid piling onto what is probably one shared outage. Investigate before the next cycle.` } }];"
+      },
+      "id": "g-26",
+      "name": "Build Storm Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-27",
+              "leftValue": "={{ $json.due }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-27",
+      "name": "Storm Alert Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $('Build Storm Alert').first().json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-28",
+      "name": "Send Storm Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6160,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents/' + encodeURIComponent('__storm__') }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: 'system', last_alerted_at: Date.now() } }}"
+      },
+      "id": "g-29",
+      "name": "Record Storm Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6440,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst a = $('Assess Failure Batch').first().json;\nconst cap = Number(C.MAX_EXECUTIONS_PER_CYCLE);\nreturn a.executions.slice(0, cap).map((e) => ({ json: { execution_id: String(e.id), workflow_id: e.workflowId, stopped_at: e.stoppedAt || e.startedAt, mode: e.mode } }));"
+      },
+      "id": "g-30",
+      "name": "Split Into Per-Execution Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5320,
+        150
+      ],
+      "notes": "Newest first, capped at MAX_EXECUTIONS_PER_CYCLE so one bad hour cannot trigger hundreds of detail calls."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.N8N_API_URL.replace(/\\/+$/, '') + '/executions/' + encodeURIComponent($json.execution_id) + '?includeData=true' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $('CONFIG').first().json.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-31",
+      "name": "Get Execution Detail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5600,
+        150
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst T = JSON.parse(C.TRANSIENT_PATTERNS_JSON).map((p) => new RegExp(p, 'i'));\nconst P = JSON.parse(C.PERMANENT_PATTERNS_JSON).map((p) => new RegExp(p, 'i'));\nconst NR = $('Monitor Rules').first().json.rules.never_retry_nodes.map((p) => new RegExp(p, 'i'));\nconst out = [];\n$input.all().forEach((it, i) => {\n  const src = $('Split Into Per-Execution Items').itemMatching(i).json;\n  const d = it.json;\n  const ok = !d.error && d.statusCode >= 200 && d.statusCode < 300 && d.body;\n  const rd = ok && d.body.data && d.body.data.resultData ? d.body.data.resultData : {};\n  const err = rd.error || {};\n  const message = String(err.message || err.description || '');\n  const text = [message, err.description, err.httpCode].filter((x) => x !== undefined && x !== null).join(' ');\n  const code = Number(err.httpCode);\n  let failure_type = 'unknown';\n  if (Number.isFinite(code) && (code >= 500 || code === 429 || code === 408)) failure_type = 'transient';\n  else if (Number.isFinite(code) && code >= 400 && code < 500) failure_type = 'permanent';\n  else if (T.some((re) => re.test(text))) failure_type = 'transient';\n  else if (P.some((re) => re.test(text))) failure_type = 'permanent';\n  const failed_node = rd.lastNodeExecuted || (err.node && err.node.name) || 'unknown';\n  let rules_blocked = false;\n  if (failure_type === 'transient' && NR.some((re) => re.test(failed_node))) { failure_type = 'unknown'; rules_blocked = true; }   // Monitor Rules: not safe to repeat -> a person decides\n  out.push({ json: { ...src, failed_node, error_message: message.slice(0, 500),\n    failure_type, rules_blocked, detail_ok: !!ok } });\n});\nreturn out;"
+      },
+      "id": "g-32",
+      "name": "Classify Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5880,
+        150
+      ],
+      "notes": "transient (5xx, 429, timeouts, resets: worth retrying) / permanent (other 4xx, auth, validation: a person must fix it) / unknown (never auto-retried). HTTP status is checked first, then your regex lists from CONFIG."
+    },
+    {
+      "parameters": {
+        "jsCode": "const A = $('Assess Failure Batch').first().json;\nconst fnv = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };\nconst slug = (s) => String(s).replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'x';\nconst groups = new Map();\nfor (const it of $input.all()) {\n  const t = it.json;\n  const raw = `${t.workflow_id}::${t.failed_node}::${t.failure_type}` + (t.rules_blocked ? '::blocked' : '');\n  const key = `${slug(t.workflow_id)}.${slug(t.failed_node)}.${t.failure_type}.${fnv(raw)}`;\n  if (!groups.has(key)) groups.set(key, { incident_key: key, workflow_id: t.workflow_id, failed_node: t.failed_node, failure_type: t.failure_type, rules_blocked: !!t.rules_blocked, executions: [] });\n  groups.get(key).executions.push(t);\n}\nreturn [...groups.values()].map((g) => {\n  g.executions.sort((a, b) => (Date.parse(b.stopped_at) || 0) - (Date.parse(a.stopped_at) || 0));\n  const newest = g.executions[0];\n  return { json: { incident_key: g.incident_key, workflow_id: g.workflow_id, failed_node: g.failed_node, failure_type: g.failure_type, rules_blocked: g.rules_blocked,\n    error_message: newest.error_message, execution_ids: g.executions.map((x) => x.execution_id), failure_count: g.executions.length,\n    last_failure_at: Date.parse(newest.stopped_at) || Date.now(), is_storm: A.is_storm } };\n});"
+      },
+      "id": "g-33",
+      "name": "Group Into Incidents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6160,
+        150
+      ],
+      "notes": "One incident = workflow + failed node + failure type (NOT the execution id: every retry gets a new one). Ten failed runs of the same bug become ONE incident with ten executions, so retries and pages are counted per incident."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.N8N_API_URL.replace(/\\/+$/, '') + '/workflows/' + encodeURIComponent($json.workflow_id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $('CONFIG').first().json.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-34",
+      "name": "Get Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6440,
+        150
+      ],
+      "notes": "One call per incident (not per execution): is the workflow still active, and what is it called?",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const R = $('Monitor Rules').first().json.rules;\nreturn $input.all().map((it, i) => {\n  const g = $('Group Into Incidents').itemMatching(i).json;\n  const r = it.json;\n  const found = !r.error && r.statusCode >= 200 && r.statusCode < 300 && r.body;\n  const deleted = !r.error && r.statusCode === 404;\n  const active = found ? r.body.active === true : true;       // could not check: do not silently drop a real failure\n  const workflow_name = found && r.body.name ? r.body.name : g.workflow_id;\n  const ignored = R.ignore_workflows.some((m) => (m.id !== undefined && m.id === g.workflow_id) || (m.name_regex !== undefined && new RegExp(m.name_regex, 'i').test(workflow_name)));   // Monitor Rules\n  return { json: { ...g, workflow_name, workflow_active: active,\n    process: !deleted && active && !ignored, skip_reason: deleted ? 'workflow_deleted' : (!active ? 'workflow_inactive' : (ignored ? 'ignored_by_rules' : null)) } };\n});"
+      },
+      "id": "g-35",
+      "name": "Evaluate Workflow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        0
+      ],
+      "notes": "Skips workflows that are switched off (someone is probably fixing them) or deleted."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-36",
+              "leftValue": "={{ $json.process }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-36",
+      "name": "Workflow Worth Handling?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents/' + encodeURIComponent($json.incident_key) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-37",
+      "name": "Get Incident State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7280,
+        0
+      ],
+      "notes": "Retry count, next allowed retry time and last-alert time for this incident. 404 = never seen before.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst R = $('Monitor Rules').first().json.rules;\nconst now = Date.now();\nreturn $input.all().map((it, i) => {\n  const g = $('Evaluate Workflow').itemMatching(i).json;\n  const ov = R.workflow_overrides.find((m) => (m.id !== undefined && m.id === g.workflow_id) || (m.name_regex !== undefined && new RegExp(m.name_regex, 'i').test(g.workflow_name))) || {};\n  const maxRetries = ov.max_retries !== undefined ? Math.min(Number(C.MAX_RETRIES), ov.max_retries) : Number(C.MAX_RETRIES);   // a rule can only lower the ceiling\n  const r = it.json;\n  const stateOk = !r.error && typeof r.statusCode === 'number' && ((r.statusCode >= 200 && r.statusCode < 300) || r.statusCode === 404);\n  let state = stateOk && r.statusCode !== 404 ? (r.body || {}) : null;\n  if (state && state.status === 'resolved') state = null;                 // a resolved incident that fails again is a new incident\n  const retries_used = Number(state && state.retries_used) || 0;\n  const next_retry_at = Number(state && state.next_retry_at) || 0;\n  const last_alerted_at = Number(state && state.last_alerted_at) || 0;\n  let action, escalate_reason = null;\n  if (!stateOk) action = 'state_error';\n  else if (g.is_storm) action = 'suppress_storm';\n  else if (g.failure_type === 'permanent') { action = 'escalate'; escalate_reason = 'permanent_error'; }\n  else if (g.failure_type === 'unknown') { action = 'escalate'; escalate_reason = g.rules_blocked ? 'retry_blocked_by_rules' : 'unknown_error'; }\n  else if (ov.auto_retry === false) { action = 'escalate'; escalate_reason = 'auto_retry_disabled'; }\n  else if (retries_used >= maxRetries) { action = 'escalate'; escalate_reason = 'retries_exhausted'; }\n  else if (now < next_retry_at) action = 'wait_backoff';\n  else action = 'retry';\n  return { json: { ...g, is_new_incident: !state, retries_used, next_retry_at, last_alerted_at, action, escalate_reason, rule_alert_prefix: ov.alert_prefix || null, rule_note: ov.note || null } };\n});"
+      },
+      "id": "g-38",
+      "name": "Decide Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7560,
+        0
+      ],
+      "notes": "Only transient failures are retried. Permanent and unknown go straight to a person. Retries exhausted escalates. Inside a backoff window it waits. During a storm it suppresses."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-39-0",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "retry",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "retry"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-39-1",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "escalate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "escalate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-39-2",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "wait_backoff",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "wait_backoff"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-39-3",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "suppress_storm",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "suppress_storm"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "state_error"
+        }
+      },
+      "id": "g-39",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        7840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst cap = Number(C.MAX_RETRIES_PER_INCIDENT_PER_CYCLE);\nconst out = [];\nfor (const it of $input.all()) {\n  const g = it.json;\n  g.execution_ids.slice(0, cap).forEach((id) => out.push({ json: { ...g, execution_id: id } }));\n}\nreturn out;"
+      },
+      "id": "g-40",
+      "name": "Expand To Executions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8120,
+        0
+      ],
+      "notes": "Each failed execution in the incident is retried (up to MAX_RETRIES_PER_INCIDENT_PER_CYCLE), but the incident is charged ONE attempt for the cycle."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.N8N_API_URL.replace(/\\/+$/, '') + '/executions/' + encodeURIComponent($json.execution_id) + '/retry' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $('CONFIG').first().json.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-41",
+      "name": "Retry Execution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8400,
+        0
+      ],
+      "notes": "POST /executions/{id}/retry (needs the execution:retry API-key scope).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const byKey = new Map();\n$input.all().forEach((it, i) => {\n  const src = $('Expand To Executions').itemMatching(i).json;\n  const r = it.json;\n  const ok = !r.error && r.statusCode >= 200 && r.statusCode < 300;\n  if (!byKey.has(src.incident_key)) { const { execution_id, ...rest } = src; byKey.set(src.incident_key, { ...rest, dispatched: 0, dispatch_failed: 0, dispatch_error: null }); }\n  const g = byKey.get(src.incident_key);\n  if (ok) g.dispatched += 1; else { g.dispatch_failed += 1; g.dispatch_error = r.error ? String(r.error.message || r.error).slice(0, 200) : `retry returned status ${r.statusCode}`; }\n});\nreturn [...byKey.values()].map((g) => ({ json: { ...g, retry_ok: g.dispatched > 0, escalate_reason: g.dispatched > 0 ? null : 'retry_dispatch_failed' } }));"
+      },
+      "id": "g-42",
+      "name": "Evaluate Retry Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8680,
+        0
+      ],
+      "notes": "Back to one item per incident: did at least one retry dispatch?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-43",
+              "leftValue": "={{ $json.retry_ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-43",
+      "name": "Retry Dispatched?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nreturn $input.all().map((it) => {\n  const g = it.json;\n  const retries_used = g.retries_used + 1;\n  const backoff = Number(C.BACKOFF_BASE_MINUTES) * 60000 * Math.pow(Number(C.BACKOFF_MULTIPLIER), retries_used - 1);\n  const jitter = Math.floor(Math.random() * Number(C.BACKOFF_JITTER_SECONDS) * 1000);\n  return { json: { ...g, retries_used, next_retry_at: Date.now() + backoff + jitter } };\n});"
+      },
+      "id": "g-44",
+      "name": "Compute Backoff",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9240,
+        0
+      ],
+      "notes": "Exponential backoff with jitter: 5m, 15m, 45m by default."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents/' + encodeURIComponent($json.incident_key) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { workflow_id: $json.workflow_id, workflow_name: $json.workflow_name, failed_node: $json.failed_node, failure_type: $json.failure_type, error_message: $json.error_message, last_failure_at: $json.last_failure_at, last_seen_at: Date.now(), status: 'open', phase: 'retrying', retries_used: $json.retries_used, next_retry_at: $json.next_retry_at, ...($json.is_new_incident ? { opened_at: Date.now() } : {}) } }}"
+      },
+      "id": "g-45",
+      "name": "Write Retry State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9520,
+        0
+      ],
+      "notes": "Records everything the recovery check later needs (workflow id, failed node, last failure time), not just the counters.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it, i) => {\n  const g = $('Compute Backoff').itemMatching(i).json;\n  const r = it.json;\n  const wrote = !r.error && r.statusCode >= 200 && r.statusCode < 300;\n  return { json: { incident_key: g.incident_key, workflow_id: g.workflow_id, outcome: 'retried', executions_retried: g.dispatched, retries_used: g.retries_used, state_write_failed: !wrote } };\n});"
+      },
+      "id": "g-46",
+      "name": "Outcome: Retried",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-47",
+              "leftValue": "={{ ($json.last_alerted_at || 0) > 0 && (Date.now() - $json.last_alerted_at) < Number($('CONFIG').first().json.ALERT_COOLDOWN_MINUTES) * 60000 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-47",
+      "name": "In Alert Cooldown?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        9240,
+        150
+      ],
+      "notes": "One page per incident per ALERT_COOLDOWN_MINUTES (30 by default), not one per poll cycle."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents/' + encodeURIComponent($json.incident_key) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { workflow_id: $json.workflow_id, workflow_name: $json.workflow_name, failed_node: $json.failed_node, failure_type: $json.failure_type, error_message: $json.error_message, last_failure_at: $json.last_failure_at, last_seen_at: Date.now(), status: 'open' } }}"
+      },
+      "id": "g-48",
+      "name": "Touch Incident (Duplicate Alert Suppressed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9520,
+        150
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it, i) => {\n  const g = $('In Alert Cooldown?').itemMatching(i).json;\n  return { json: { incident_key: g.incident_key, workflow_id: g.workflow_id, outcome: 'escalation_suppressed_cooldown', escalate_reason: g.escalate_reason, state_write_failed: !!it.json.error || !(it.json.statusCode >= 200 && it.json.statusCode < 300) } };\n});"
+      },
+      "id": "g-49",
+      "name": "Outcome: Cooldown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9800,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst R = $('Monitor Rules').first().json.rules;\nconst REASON = { permanent_error: 'a permanent error (looks like a code or config bug, not transient)',\n  unknown_error: 'an unrecognized failure type (needs eyes, not blind auto-retry)',\n  retries_exhausted: 'retries exhausted (still failing after the automatic attempts)',\n  retry_dispatch_failed: 'the automatic retry call itself failed to dispatch',\n  auto_retry_disabled: 'automatic retry is switched off for this workflow (Monitor Rules)',\n  retry_blocked_by_rules: 'this node is marked as not safe to repeat automatically (Monitor Rules)',\n  ...R.alert.reasons };\nreturn $input.all().map((it) => {\n  const t = it.json;\n  const F = { workflow: `*Workflow:* ${t.workflow_name} (${t.workflow_id})`, node: `*Failed node:* ${t.failed_node}`, reason: `*Reason:* ${REASON[t.escalate_reason] || t.escalate_reason}`,\n    error: `*Error:* ${t.error_message}`, executions: `*Failed executions:* ${t.failure_count} (latest: ${t.execution_ids[0]})` };\n  const head = [t.rule_alert_prefix, R.alert.icon, `*${R.alert.title}*`].filter(Boolean).join(' ');\n  const lines = [head, ...R.alert.fields.map((f) => F[f]), ...(t.rule_note ? [`*Note:* ${t.rule_note}`] : []), ...(R.alert.extra_line ? [R.alert.extra_line] : [])];\n  return { json: { ...t, text: lines.join('\\n'), slack_configured: !!C.SLACK_WEBHOOK_URL } };\n});"
+      },
+      "id": "g-50",
+      "name": "Build Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-51",
+              "leftValue": "={{ $json.slack_configured }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-51",
+      "name": "Slack Configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        9800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-52",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10080,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it, i) => {\n  const t = $('Build Alert').itemMatching(i).json;\n  const r = it.json;\n  const skipped = r.slack_configured === false;                            // no webhook configured: alert lives in the digest only\n  const sent = !skipped && !r.error && r.statusCode >= 200 && r.statusCode < 300;\n  return { json: { ...t, alert_sent: sent, alert_skipped: skipped, record_alerted: skipped || sent } };   // a FAILED Slack post must not start the cooldown, or the page is lost\n});"
+      },
+      "id": "g-53",
+      "name": "Evaluate Alert Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10360,
+        0
+      ],
+      "notes": "If Slack rejects the post, the cooldown is NOT started, so the next cycle pages again instead of the alert silently vanishing."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents/' + encodeURIComponent($json.incident_key) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { workflow_id: $json.workflow_id, workflow_name: $json.workflow_name, failed_node: $json.failed_node, failure_type: $json.failure_type, error_message: $json.error_message, last_failure_at: $json.last_failure_at, last_seen_at: Date.now(), status: 'open', phase: 'escalated', escalated: true, escalate_reason: $json.escalate_reason, ...($json.record_alerted ? { last_alerted_at: Date.now() } : {}), ...($json.is_new_incident ? { opened_at: Date.now() } : {}) } }}"
+      },
+      "id": "g-54",
+      "name": "Update Incident (Escalated)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10640,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it, i) => {\n  const g = $('Evaluate Alert Result').itemMatching(i).json;\n  return { json: { incident_key: g.incident_key, workflow_id: g.workflow_id, outcome: 'escalated', escalate_reason: g.escalate_reason, alert_sent: g.alert_sent, alert_skipped: g.alert_skipped,\n    state_write_failed: !!it.json.error || !(it.json.statusCode >= 200 && it.json.statusCode < 300) } };\n});"
+      },
+      "id": "g-55",
+      "name": "Outcome: Escalated",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it) => ({ json: { incident_key: it.json.incident_key, workflow_id: it.json.workflow_id, outcome: 'waiting_backoff', retries_used: it.json.retries_used, next_retry_at: it.json.next_retry_at } }));"
+      },
+      "id": "g-56",
+      "name": "Outcome: Waiting In Backoff",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8120,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it) => ({ json: { incident_key: it.json.incident_key, workflow_id: it.json.workflow_id, outcome: 'suppressed_storm' } }));"
+      },
+      "id": "g-57",
+      "name": "Outcome: Storm Suppressed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it) => ({ json: { incident_key: it.json.incident_key, workflow_id: it.json.workflow_id, outcome: 'state_error' } }));"
+      },
+      "id": "g-58",
+      "name": "Outcome: State Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8120,
+        450
+      ],
+      "notes": "The state service could not be read for this incident, so nothing was done for it. The watermark is NOT advanced, so the next cycle looks at the same window again."
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it) => ({ json: { incident_key: it.json.incident_key, workflow_id: it.json.workflow_id, outcome: 'skipped', reason: it.json.skip_reason } }));"
+      },
+      "id": "g-59",
+      "name": "Outcome: Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "numberInputs": 7,
+        "mode": "append"
+      },
+      "id": "g-60",
+      "name": "Merge Outcomes",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        11200,
+        0
+      ],
+      "notes": "Branches that converge must go through a Merge: a plain Code node with several inputs runs once PER ARRIVAL (this is how the original ran its summary several times)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const counts = { retried: 0, escalated: 0, escalation_suppressed_cooldown: 0, waiting_backoff: 0, suppressed_storm: 0, skipped: 0, state_error: 0 };\nconst items = $input.all().map((i) => i.json).filter((o) => o.outcome && o.outcome !== 'none');\nlet state_write_failures = 0;\nfor (const o of items) { if (counts[o.outcome] !== undefined) counts[o.outcome]++; if (o.state_write_failed) state_write_failures++; }\nreturn [{ json: { outcomes: items, counts, state_write_failures } }];"
+      },
+      "id": "g-61",
+      "name": "Collect Outcomes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { outcome: 'none' } }];"
+      },
+      "id": "g-62",
+      "name": "No Failures This Cycle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents?status=open' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-63",
+      "name": "Get Open Incidents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11760,
+        0
+      ],
+      "notes": "Recovery runs every cycle, after the failure lane, whether or not this cycle found new failures: a workflow can heal between polls.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst ok = !r.error && r.statusCode >= 200 && r.statusCode < 300 && r.body;\nconst list = ok && Array.isArray(r.body.incidents) ? r.body.incidents.filter((i) => i.workflow_id && i.status === 'open') : [];\nreturn [{ json: { recovery_ok: !!ok, candidates: list } }];"
+      },
+      "id": "g-64",
+      "name": "Prepare Recovery Checks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        12040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-65",
+              "leftValue": "={{ $json.candidates.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-65",
+      "name": "Any Open Incidents?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        12320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.first().json.candidates.map((c) => ({ json: c }));"
+      },
+      "id": "g-66",
+      "name": "Split Open Incidents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        12600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.N8N_API_URL.replace(/\\/+$/, '') + '/executions?workflowId=' + encodeURIComponent($json.workflow_id) + '&status=success&limit=1' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "={{ $('CONFIG').first().json.N8N_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-67",
+      "name": "Check Recent Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        12880,
+        0
+      ],
+      "notes": "Newest successful run of the workflow. The workflow must save successful executions (n8n default) for this to work.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it, i) => {\n  const inc = $('Split Open Incidents').itemMatching(i).json;\n  const r = it.json;\n  const ok = !r.error && r.statusCode >= 200 && r.statusCode < 300 && r.body && Array.isArray(r.body.data);\n  const newest = ok && r.body.data.length ? r.body.data[0] : null;\n  const since = Number(inc.last_failure_at) || Number(inc.opened_at) || 0;\n  const t = newest ? (Date.parse(newest.startedAt || newest.stoppedAt || '') || 0) : 0;\n  return { json: { ...inc, check_ok: !!ok, recovered: !!newest && t > since } };\n});"
+      },
+      "id": "g-68",
+      "name": "Evaluate Recovery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        13160,
+        0
+      ],
+      "notes": "Recovered = the workflow has a successful run that started AFTER the incident's last recorded failure."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-69",
+              "leftValue": "={{ $json.recovered }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-69",
+      "name": "Recovered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        13440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/incidents/' + encodeURIComponent($json.incident_key) + '/resolve' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-70",
+      "name": "Resolve Incident",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        13720,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nreturn $input.all().map((it, i) => {\n  const t = $('Recovered?').itemMatching(i).json;\n  const r = it.json;\n  const resolved = !r.error && r.statusCode >= 200 && r.statusCode < 300;\n  const text = `:white_check_mark: *Recovered* -- ${t.workflow_name || t.workflow_id} is succeeding again (was failing at node ${t.failed_node}). Incident resolved.`;\n  return { json: { ...t, resolved, text, send_notice: resolved && !!C.SLACK_WEBHOOK_URL } };\n});"
+      },
+      "id": "g-71",
+      "name": "Build Recovery Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        14000,
+        0
+      ],
+      "notes": "Resolves first, announces second: never say \"recovered\" for an incident that could not be closed."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-72",
+              "leftValue": "={{ $json.send_notice }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-72",
+      "name": "Send Recovery Notice?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        14280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-73",
+      "name": "Send Recovery Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        14560,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it, i) => {\n  const t = $('Build Recovery Message').itemMatching(i).json;\n  return { json: { incident_key: t.incident_key, workflow_id: t.workflow_id, outcome: t.resolved ? 'recovered' : 'recovery_failed' } };\n});"
+      },
+      "id": "g-74",
+      "name": "Outcome: Recovered",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        14840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((it) => ({ json: { incident_key: it.json.incident_key, workflow_id: it.json.workflow_id, outcome: it.json.check_ok ? 'still_open' : 'recovery_check_failed' } }));"
+      },
+      "id": "g-75",
+      "name": "Outcome: Still Open",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        13720,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { outcome: 'none', recovery_ok: $('Prepare Recovery Checks').first().json.recovery_ok } }];"
+      },
+      "id": "g-76",
+      "name": "No Open Incidents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        12600,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "numberInputs": 3,
+        "mode": "append"
+      },
+      "id": "g-77",
+      "name": "Merge Recovery Outcomes",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        15120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all().map((i) => i.json).filter((o) => o.outcome && o.outcome !== 'none');\nreturn [{ json: { recovered: items.filter((o) => o.outcome === 'recovered').map((o) => o.workflow_id),\n  still_open_count: items.filter((o) => o.outcome === 'still_open').length,\n  recovery_issues: items.filter((o) => o.outcome === 'recovery_failed' || o.outcome === 'recovery_check_failed').length } }];"
+      },
+      "id": "g-78",
+      "name": "Collect Recovery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        15400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst ctx = $('Validate Trigger').first().json;\nconst lock = $('Evaluate Lock').first().json;\nconst win = $('Compute Poll Window').first().json;\nconst out = $('Collect Outcomes').first().json;\nconst rec = $('Collect Recovery').first().json;\nconst batch = $('Assess Failure Batch').first().json;\nconst warnings = [];\nif (batch.truncated_pages) warnings.push(`failure list hit MAX_PAGES (${C.MAX_PAGES}); older failures in this window were not examined`);\nif (out.counts.state_error) warnings.push(`${out.counts.state_error} incident(s) skipped because the state service could not be read`);\nif (out.state_write_failures) warnings.push(`${out.state_write_failures} incident state write(s) failed`);\nif (rec.recovery_issues) warnings.push(`${rec.recovery_issues} recovery check(s) failed`);\nconst clean = !out.counts.state_error && !out.state_write_failures;\nconst alertCooldownMs = Number(C.ALERT_COOLDOWN_MINUTES) * 60000;\nlet alert_text = null; const alert_key = 'completed_with_warnings';\nif (warnings.length) {\n  const sd = $getWorkflowStaticData('global'); sd.cycle_alerts = sd.cycle_alerts || {};\n  if (Date.now() - (sd.cycle_alerts[alert_key] || 0) >= alertCooldownMs) alert_text = ':warning: Self-healing monitor finished a cycle with problems: ' + warnings.join('; ') + '.';\n}\nconst body = { status: clean ? 'completed' : 'completed_with_errors', triggered_by: ctx.triggered_by, forced_through: !!lock.forced_through,\n  window: { since: new Date(win.since).toISOString(), until: new Date(win.until).toISOString(), bootstrapped: win.bootstrapped },\n  failed_executions_seen: batch.total_failed, distinct_workflows_failing: batch.distinct_workflow_count, storm: batch.is_storm,\n  counts: out.counts, recovered: rec.recovered, still_open_count: rec.still_open_count, warnings, watermark_advanced: clean, checked_at: new Date().toISOString() };\nreturn [{ json: { kind: 'completed', triggered_by: ctx.triggered_by, lock_token: lock.lock_token || null, advance_watermark: clean, watermark_value: win.until,\n  alert_text, alert_key, http_status: 200, response_body: body } }];"
+      },
+      "id": "g-79",
+      "name": "Build Completed Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        15680,
+        0
+      ],
+      "notes": "Digest. The watermark advances ONLY if nothing was skipped or lost this cycle."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $input.first().json;\nconst ctx = $('Validate Trigger').first().json;\nlet lock = null; try { lock = $('Evaluate Lock').first().json; } catch (e) { /* not reached */ }\nconst reason = t.degraded_reason || 'unknown';\nconst detail = t.degraded_detail || '';\nconst TEXT = {\n  state_service_unavailable: `:rotating_light: Self-healing monitor cannot reach its state service (${detail}). NOTHING is being monitored until it is back.`,\n  n8n_api_unavailable: `:rotating_light: Self-healing monitor could not read the n8n API (${detail}). This cycle is skipped and the watermark is not advanced, so the next cycle re-checks the same window.`,\n};\nconst sd = $getWorkflowStaticData('global'); sd.cycle_alerts = sd.cycle_alerts || {};\nlet alert_text = null;\nif (Date.now() - (sd.cycle_alerts[reason] || 0) >= Number(C.ALERT_COOLDOWN_MINUTES) * 60000) alert_text = TEXT[reason] || `:rotating_light: Self-healing monitor degraded: ${reason}`;\nreturn [{ json: { kind: 'degraded', triggered_by: ctx.triggered_by, lock_token: lock ? (lock.lock_token || null) : null, advance_watermark: false, alert_text, alert_key: reason,\n  http_status: 503, response_body: { status: 'monitor_degraded', reason, detail, triggered_by: ctx.triggered_by, watermark_advanced: false } } }];"
+      },
+      "id": "g-80",
+      "name": "Build Degraded Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4760,
+        150
+      ],
+      "notes": "The monitor monitoring itself: an unreachable n8n API or state service is its own loud failure, never \"zero failures this cycle\". Alerts are rate-limited per reason so an outage does not page every five minutes."
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nreturn [{ json: { kind: 'skipped', triggered_by: ctx.triggered_by, lock_token: null, advance_watermark: false, alert_text: null,\n  http_status: 200, response_body: { status: 'skipped', reason: 'poll_already_in_progress', triggered_by: ctx.triggered_by } } }];"
+      },
+      "id": "g-81",
+      "name": "Build Skipped Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $input.first().json }];"
+      },
+      "id": "g-82",
+      "name": "Cycle Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        15960,
+        0
+      ],
+      "notes": "Every way a cycle can end lands here, then runs the same tail: alert, watermark, release the lock, respond."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-83",
+              "leftValue": "={{ !!$json.alert_text && !!$('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-83",
+      "name": "Cycle Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        16240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $('Cycle Outcome').first().json.alert_text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-84",
+      "name": "Send Cycle Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        16520,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const o = $('Cycle Outcome').first().json;\nconst r = $input.first().json;\nif (!r.error && r.statusCode >= 200 && r.statusCode < 300) {          // only a delivered alert starts the cooldown\n  const sd = $getWorkflowStaticData('global'); sd.cycle_alerts = sd.cycle_alerts || {};\n  sd.cycle_alerts[o.alert_key] = Date.now();\n}\nreturn [{ json: o }];"
+      },
+      "id": "g-85",
+      "name": "Record Cycle Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16800,
+        0
+      ],
+      "notes": "Monitor-level alerts (degraded, completed with warnings) are rate-limited per reason using the workflow's own static data, because the state service may be the very thing that is down."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-86",
+              "leftValue": "={{ $json.advance_watermark === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-86",
+      "name": "Advance Watermark?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        17080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/last-checked' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { last_checked_at: $('Cycle Outcome').first().json.watermark_value } }}"
+      },
+      "id": "g-87",
+      "name": "Record Last Checked Timestamp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        17360,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.MONITOR_STATE_API_URL.replace(/\\/+$/, '') + '/unlock' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.MONITOR_STATE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { token: $('Cycle Outcome').first().json.lock_token } }}"
+      },
+      "id": "g-88",
+      "name": "Release Poll Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        17640,
+        0
+      ],
+      "notes": "Releases only the lock THIS cycle holds (token). A forced-through manual run holds no token, so it can never release another cycle's lock.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const o = $('Cycle Outcome').first().json;\nreturn [{ json: { triggered_by: o.triggered_by, http_status: o.http_status, response_body: o.response_body } }];"
+      },
+      "id": "g-89",
+      "name": "Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        17920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-90",
+              "leftValue": "={{ $json.triggered_by === 'manual' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-90",
+      "name": "Final Run Is Manual?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        18200,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "g-91",
+      "name": "Stop Quietly (Scheduled)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        18480,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Self-Healing Execution Monitor\n**Setup (about 10 minutes)**\n1. In n8n: Settings > n8n API > create a key with scopes `workflow:read`, `workflow:list`, `execution:read`, `execution:list`, `execution:retry`.\n2. Run a state service (a reference one is included: `node 10-self-healing-execution-monitor-mock-server.js`, port 4200).\n3. Open **CONFIG**: set `N8N_API_URL` (e.g. `http://localhost:5678/api/v1`), `N8N_API_KEY`, `MONITOR_STATE_API_URL`, and optionally `SLACK_WEBHOOK_URL`.\n4. Activate. It runs every 5 minutes, or POST `/webhook/monitor/check-now` to run one cycle now.\n\n**Each cycle:** lock -> window -> failed executions -> group into incidents -> retry transient / escalate the rest -> recovery check -> digest -> advance watermark (only if nothing was lost) -> unlock.\n\nMonitored workflows must save failed AND successful executions (n8n default).",
+        "height": 380,
+        "width": 640,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -520
+      ]
+    }
+  ],
+  "connections": {
+    "Poll Schedule (Every 5 Min)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Check Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Manual Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Schedule": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Manual Request": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Monitor Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monitor Rules": {
+      "main": [
+        [
+          {
+            "node": "Validate Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Trigger": {
+      "main": [
+        [
+          {
+            "node": "Trigger OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger OK?": {
+      "main": [
+        [
+          {
+            "node": "Acquire Poll Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected Run Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected Run Is Manual?": {
+      "main": [
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fail Scheduled Run (Misconfigured)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Acquire Poll Lock": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Lock": {
+      "main": [
+        [
+          {
+            "node": "Lock Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lock Route": {
+      "main": [
+        [
+          {
+            "node": "Get Last Checked Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Skipped Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Degraded Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Last Checked Timestamp": {
+      "main": [
+        [
+          {
+            "node": "Compute Poll Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Poll Window": {
+      "main": [
+        [
+          {
+            "node": "Window OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window OK?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Failed Executions Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Degraded Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Failed Executions Page": {
+      "main": [
+        [
+          {
+            "node": "Accumulate Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accumulate Page": {
+      "main": [
+        [
+          {
+            "node": "More Pages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "More Pages?": {
+      "main": [
+        [
+          {
+            "node": "Next Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Assess Failure Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Next Page": {
+      "main": [
+        [
+          {
+            "node": "Fetch Failed Executions Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assess Failure Batch": {
+      "main": [
+        [
+          {
+            "node": "Fetch OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch OK?": {
+      "main": [
+        [
+          {
+            "node": "Any Failures Found?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Degraded Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Failures Found?": {
+      "main": [
+        [
+          {
+            "node": "Storm Detected?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Failures This Cycle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Storm Detected?": {
+      "main": [
+        [
+          {
+            "node": "Get Storm Alert State",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Into Per-Execution Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Split Into Per-Execution Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Storm Alert State": {
+      "main": [
+        [
+          {
+            "node": "Build Storm Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Storm Alert": {
+      "main": [
+        [
+          {
+            "node": "Storm Alert Due?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Storm Alert Due?": {
+      "main": [
+        [
+          {
+            "node": "Send Storm Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Storm Alert": {
+      "main": [
+        [
+          {
+            "node": "Record Storm Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Into Per-Execution Items": {
+      "main": [
+        [
+          {
+            "node": "Get Execution Detail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Execution Detail": {
+      "main": [
+        [
+          {
+            "node": "Classify Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Failure": {
+      "main": [
+        [
+          {
+            "node": "Group Into Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group Into Incidents": {
+      "main": [
+        [
+          {
+            "node": "Get Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Workflow": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Workflow": {
+      "main": [
+        [
+          {
+            "node": "Workflow Worth Handling?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Worth Handling?": {
+      "main": [
+        [
+          {
+            "node": "Get Incident State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Incident State": {
+      "main": [
+        [
+          {
+            "node": "Decide Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Action": {
+      "main": [
+        [
+          {
+            "node": "Route Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Action": {
+      "main": [
+        [
+          {
+            "node": "Expand To Executions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "In Alert Cooldown?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Waiting In Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Storm Suppressed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: State Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand To Executions": {
+      "main": [
+        [
+          {
+            "node": "Retry Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Execution": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Retry Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Retry Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Retry Dispatched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Dispatched?": {
+      "main": [
+        [
+          {
+            "node": "Compute Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "In Alert Cooldown?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Backoff": {
+      "main": [
+        [
+          {
+            "node": "Write Retry State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Retry State": {
+      "main": [
+        [
+          {
+            "node": "Outcome: Retried",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "In Alert Cooldown?": {
+      "main": [
+        [
+          {
+            "node": "Touch Incident (Duplicate Alert Suppressed)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Touch Incident (Duplicate Alert Suppressed)": {
+      "main": [
+        [
+          {
+            "node": "Outcome: Cooldown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Alert": {
+      "main": [
+        [
+          {
+            "node": "Slack Configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Configured?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Evaluate Alert Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Alert Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Alert Result": {
+      "main": [
+        [
+          {
+            "node": "Update Incident (Escalated)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Incident (Escalated)": {
+      "main": [
+        [
+          {
+            "node": "Outcome: Escalated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Retried": {
+      "main": [
+        [
+          {
+            "node": "Merge Outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Escalated": {
+      "main": [
+        [
+          {
+            "node": "Merge Outcomes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Outcome: Cooldown": {
+      "main": [
+        [
+          {
+            "node": "Merge Outcomes",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Outcome: Waiting In Backoff": {
+      "main": [
+        [
+          {
+            "node": "Merge Outcomes",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Outcome: Storm Suppressed": {
+      "main": [
+        [
+          {
+            "node": "Merge Outcomes",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Outcome: State Error": {
+      "main": [
+        [
+          {
+            "node": "Merge Outcomes",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    },
+    "Outcome: Skipped": {
+      "main": [
+        [
+          {
+            "node": "Merge Outcomes",
+            "type": "main",
+            "index": 6
+          }
+        ]
+      ]
+    },
+    "Merge Outcomes": {
+      "main": [
+        [
+          {
+            "node": "Collect Outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Failures This Cycle": {
+      "main": [
+        [
+          {
+            "node": "Collect Outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Outcomes": {
+      "main": [
+        [
+          {
+            "node": "Get Open Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Open Incidents": {
+      "main": [
+        [
+          {
+            "node": "Prepare Recovery Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Recovery Checks": {
+      "main": [
+        [
+          {
+            "node": "Any Open Incidents?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Open Incidents?": {
+      "main": [
+        [
+          {
+            "node": "Split Open Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Open Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Open Incidents": {
+      "main": [
+        [
+          {
+            "node": "Check Recent Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Recent Success": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Recovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Recovery": {
+      "main": [
+        [
+          {
+            "node": "Recovered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recovered?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Incident",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Still Open",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Incident": {
+      "main": [
+        [
+          {
+            "node": "Build Recovery Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Recovery Message": {
+      "main": [
+        [
+          {
+            "node": "Send Recovery Notice?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Recovery Notice?": {
+      "main": [
+        [
+          {
+            "node": "Send Recovery Notice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Recovered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Recovery Notice": {
+      "main": [
+        [
+          {
+            "node": "Outcome: Recovered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Recovered": {
+      "main": [
+        [
+          {
+            "node": "Merge Recovery Outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Still Open": {
+      "main": [
+        [
+          {
+            "node": "Merge Recovery Outcomes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "No Open Incidents": {
+      "main": [
+        [
+          {
+            "node": "Merge Recovery Outcomes",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Recovery Outcomes": {
+      "main": [
+        [
+          {
+            "node": "Collect Recovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Recovery": {
+      "main": [
+        [
+          {
+            "node": "Build Completed Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Completed Outcome": {
+      "main": [
+        [
+          {
+            "node": "Cycle Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Degraded Outcome": {
+      "main": [
+        [
+          {
+            "node": "Cycle Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Skipped Outcome": {
+      "main": [
+        [
+          {
+            "node": "Cycle Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cycle Outcome": {
+      "main": [
+        [
+          {
+            "node": "Cycle Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cycle Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "Send Cycle Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Advance Watermark?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Cycle Alert": {
+      "main": [
+        [
+          {
+            "node": "Record Cycle Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Cycle Alert": {
+      "main": [
+        [
+          {
+            "node": "Advance Watermark?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Advance Watermark?": {
+      "main": [
+        [
+          {
+            "node": "Record Last Checked Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Release Poll Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Last Checked Timestamp": {
+      "main": [
+        [
+          {
+            "node": "Release Poll Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Poll Lock": {
+      "main": [
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Response": {
+      "main": [
+        [
+          {
+            "node": "Final Run Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Run Is Manual?": {
+      "main": [
+        [
+          {
+            "node": "Respond JSON",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop Quietly (Scheduled)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,982 @@
+{
+  "name": "Data Validation ETL Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "etl/ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-0",
+      "name": "Webhook: Ingest Batch",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "POST {batch_id, source?, records:[...]}. Replies once, after every record has been handled.",
+      "webhookId": "etl-ingest"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "SCHEMA_JSON",
+              "value": "[\n  {\n    \"name\": \"id\",\n    \"type\": \"id\",\n    \"required\": true\n  },\n  {\n    \"name\": \"email\",\n    \"type\": \"email\",\n    \"required\": true\n  },\n  {\n    \"name\": \"amount\",\n    \"type\": \"number\",\n    \"required\": true,\n    \"min\": 0,\n    \"decimals\": 2\n  },\n  {\n    \"name\": \"currency\",\n    \"type\": \"currency\",\n    \"default\": \"USD\"\n  },\n  {\n    \"name\": \"created_at\",\n    \"type\": \"date\",\n    \"required\": true\n  }\n]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "ID_FIELD",
+              "value": "id",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "ALLOW_EXTRA_FIELDS",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-3",
+              "name": "MAX_BATCH_RECORDS",
+              "value": 500,
+              "type": "number"
+            },
+            {
+              "id": "cfg-4",
+              "name": "ETL_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "DESTINATION_API_URL",
+              "value": "http://localhost:4900",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "BREAKER_API_URL",
+              "value": "http://localhost:4900",
+              "type": "string"
+            },
+            {
+              "id": "cfg-7",
+              "name": "DEAD_LETTER_API_URL",
+              "value": "http://localhost:4900",
+              "type": "string"
+            },
+            {
+              "id": "cfg-8",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-9",
+              "name": "REPLAY_ENABLED",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-10",
+              "name": "REPLAY_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-11",
+              "name": "REPLAY_MAX_PER_RUN",
+              "value": 50,
+              "type": "number"
+            },
+            {
+              "id": "cfg-12",
+              "name": "REPLAY_LEASE_SECONDS",
+              "value": 600,
+              "type": "number"
+            },
+            {
+              "id": "cfg-13",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-14",
+              "name": "LOAD_MAX_ATTEMPTS",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "LOAD_RETRY_BACKOFF_MS",
+              "value": 500,
+              "type": "number"
+            },
+            {
+              "id": "cfg-16",
+              "name": "BREAKER_TRIP_AFTER",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "cfg-17",
+              "name": "LOAD_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-18",
+              "name": "MAX_LOAD_SECONDS",
+              "value": 120,
+              "type": "number"
+            },
+            {
+              "id": "cfg-19",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. The record schema (SCHEMA_JSON), service URLs, limits. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst bad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nif (!url(C.DESTINATION_API_URL)) bad.push('CONFIG.DESTINATION_API_URL must start with http:// or https://');\nfor (const k of ['BREAKER_API_URL', 'DEAD_LETTER_API_URL', 'SLACK_WEBHOOK_URL']) if (C[k] && !url(C[k])) bad.push(`CONFIG.${k} must be blank or start with http:// or https://`);\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nfor (const k of ['MAX_BATCH_RECORDS', 'LOAD_MAX_ATTEMPTS', 'BREAKER_TRIP_AFTER', 'LOAD_TIMEOUT_MS', 'MAX_LOAD_SECONDS', 'REQUEST_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (!(Number(C.LOAD_RETRY_BACKOFF_MS) >= 0)) bad.push('CONFIG.LOAD_RETRY_BACKOFF_MS must be a number >= 0');\nconst TYPES = ['id', 'string', 'email', 'number', 'integer', 'currency', 'date', 'boolean'];\nlet schema = [];\ntry {\n  const raw = JSON.parse(C.SCHEMA_JSON);\n  if (!Array.isArray(raw) || !raw.length) throw new Error('must be a non-empty JSON array');\n  const seen = new Set();\n  raw.forEach((f, i) => {\n    const w = `SCHEMA_JSON[${i}]`;\n    if (!isObj(f)) { bad.push(`${w} must be an object`); return; }\n    if (typeof f.name !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(f.name)) bad.push(`${w}.name must be 1-64 characters: letters, digits and _ . -`);\n    else if (seen.has(f.name)) bad.push(`${w}.name \"${f.name}\" is used twice`); else seen.add(f.name);\n    if (f.from !== undefined && (typeof f.from !== 'string' || !f.from.trim() || f.from.length > 100)) bad.push(`${w}.from must be the name of the field in the incoming record (1-100 characters)`);\n    if (!TYPES.includes(f.type)) bad.push(`${w}.type must be one of ${TYPES.join(', ')}`);\n    for (const k of ['min', 'max', 'decimals', 'maxLength']) if (f[k] !== undefined && typeof f[k] !== 'number') bad.push(`${w}.${k} must be a number`);\n    if (f.enum !== undefined && (!Array.isArray(f.enum) || !f.enum.length)) bad.push(`${w}.enum must be a non-empty array`);\n    if (f.pattern !== undefined) { try { new RegExp(f.pattern); } catch (e) { bad.push(`${w}.pattern is not a valid regular expression`); } }\n    schema.push(f);\n  });\n  if (!schema.some((f) => f.name === C.ID_FIELD)) bad.push(`CONFIG.ID_FIELD \"${C.ID_FIELD}\" is not a field in SCHEMA_JSON`);\n} catch (e) { bad.push('CONFIG.SCHEMA_JSON is not valid: ' + e.message); }\nconst inp = $input.first().json;\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: [] } }];\nif (C.ETL_AUTH_TOKEN && (inp.headers || {})['x-etl-token'] !== C.ETL_AUTH_TOKEN) return reject(401, 'unauthorized');\nif (bad.length) return reject(500, 'etl_misconfigured', bad);\n\n// ---- envelope\nconst b = inp.body;\nif (!isObj(b)) return reject(400, 'batch_validation_failed', ['body must be a JSON object']);\nconst errors = [];\nif (typeof b.batch_id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(b.batch_id.trim())) errors.push('batch_id is required: 1-128 characters, letters, digits and . _ : -');\nif (b.source !== undefined && b.source !== null && (typeof b.source !== 'string' || b.source.length > 200)) errors.push('source must be a string of at most 200 characters');\nif (!Array.isArray(b.records)) errors.push('records must be an array');\nelse if (b.records.length === 0) errors.push('records must not be empty');\nelse if (b.records.length > Number(C.MAX_BATCH_RECORDS)) errors.push(`records has ${b.records.length} items; the limit is ${C.MAX_BATCH_RECORDS} per batch, so split it into several batches`);\nif (errors.length) return reject(400, 'batch_validation_failed', errors);\n\nreturn [{ json: { ok: true, batch: { batch_id: b.batch_id.trim(), source: (b.source || 'unknown'), records: b.records } } }];"
+      },
+      "id": "g-2",
+      "name": "Plan Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "Checks auth (optional), CONFIG and the batch envelope (batch_id, records array, size limit). Nothing is validated per record here; that is the next node."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-3",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-3",
+      "name": "Plan OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst schema = JSON.parse(C.SCHEMA_JSON);        // already checked by Plan Batch\nconst b = $input.first().json.batch;\n// ---- per-record validation + transform, driven by SCHEMA_JSON\nconst EMAIL = /^[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+$/;\nconst DATE = /^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,3}))?)?(Z|[+-]\\d{2}:?\\d{2})?)?$/i;\nconst parseDate = (s) => {\n  const m = DATE.exec(s.trim()); if (!m) return null;\n  const [Y, M, D, h, mi, sec, ms] = [1, 2, 3, 4, 5, 6, 7].map((i) => (m[i] === undefined ? 0 : Number(m[i])));\n  if (M < 1 || M > 12 || D < 1 || h > 23 || mi > 59 || sec > 59) return null;\n  let t = Date.UTC(Y, M - 1, D, h, mi, sec, ms ? Number((m[7] + '00').slice(0, 3)) : 0);\n  const d = new Date(t); if (d.getUTCFullYear() !== Y || d.getUTCMonth() !== M - 1 || d.getUTCDate() !== D) return null;   // 2026-02-30 etc.\n  const z = m[8];\n  if (z && z.toUpperCase() !== 'Z') { const sign = z[0] === '-' ? -1 : 1; const zz = z.replace(':', ''); t -= sign * (Number(zz.slice(1, 3)) * 60 + Number(zz.slice(3, 5))) * 60000; }\n  return new Date(t).toISOString();\n};\nconst check = (f, v, errs) => {\n  switch (f.type) {\n    case 'id': { if (typeof v === 'number' && Number.isSafeInteger(v)) v = String(v); if (typeof v !== 'string' || !v.trim() || v.trim().length > 128) { errs.push(`${f.name} must be a non-empty string or whole number (max 128 characters)`); return undefined; } return v.trim(); }\n    case 'string': { if (typeof v !== 'string') { errs.push(`${f.name} must be a string`); return undefined; } v = v.trim(); if (!v && f.required) { errs.push(`${f.name} must not be empty`); return undefined; }\n      if (v.length > (f.maxLength || 1000)) { errs.push(`${f.name} must be at most ${f.maxLength || 1000} characters`); return undefined; }\n      if (f.enum && !f.enum.includes(v)) { errs.push(`${f.name} must be one of: ${f.enum.join(', ')}`); return undefined; }\n      if (f.pattern && !new RegExp(f.pattern).test(v)) { errs.push(`${f.name} has an invalid format`); return undefined; } return v; }\n    case 'email': { if (typeof v !== 'string' || v.trim().length > 254 || !EMAIL.test(v.trim())) { errs.push(`${f.name} must be a valid email address`); return undefined; } return v.trim().toLowerCase(); }\n    case 'number': case 'integer': {\n      if (typeof v !== 'number' || !isFinite(v) || (f.type === 'integer' && !Number.isInteger(v))) { errs.push(`${f.name} must be ${f.type === 'integer' ? 'a whole number' : 'a number'}`); return undefined; }\n      if (f.min !== undefined && v < f.min) { errs.push(`${f.name} must be at least ${f.min}`); return undefined; }\n      if (f.max !== undefined && v > f.max) { errs.push(`${f.name} must be at most ${f.max}`); return undefined; }\n      if (f.type === 'number' && f.decimals !== undefined) { const p = Math.pow(10, f.decimals); v = Math.round((v + Number.EPSILON) * p) / p; } return v; }\n    case 'currency': { if (typeof v !== 'string' || !/^[A-Za-z]{3}$/.test(v.trim())) { errs.push(`${f.name} must be a 3-letter currency code`); return undefined; } return v.trim().toUpperCase(); }\n    case 'date': { const iso = typeof v === 'string' ? parseDate(v) : null; if (!iso) { errs.push(`${f.name} must be a real ISO 8601 date or date-time (e.g. 2026-09-30 or 2026-09-30T14:05:00Z)`); return undefined; } return iso; }\n    case 'boolean': { if (typeof v !== 'boolean') { errs.push(`${f.name} must be true or false`); return undefined; } return v; }\n  }\n};\nconst seenIds = new Map();\nconst valid = [], failed = [];\nb.records.forEach((rec, row) => {\n  const errs = [];\n  if (!isObj(rec)) { failed.push({ row, record_id: `row_${row}`, status: 'invalid', failure_type: 'validation', reasons: ['record must be a JSON object'], record: rec === undefined ? null : rec }); return; }\n  const out = {};\n  for (const f of schema) {\n    let v = rec[f.from || f.name];\n    if (v === undefined || v === null) {\n      if (f.default !== undefined) { v = f.default; }\n      else { if (f.required) errs.push(`${f.name} is required`); continue; }\n    }\n    const r = check(f, v, errs);\n    if (r !== undefined) out[f.name] = r;\n  }\n  if (C.ALLOW_EXTRA_FIELDS) { const known = new Set(schema.map((f) => f.from || f.name)); for (const k of Object.keys(rec)) if (!(k in out) && !known.has(k)) out[k] = rec[k]; }\n  const id = out[C.ID_FIELD];\n  const record_id = id !== undefined ? String(id) : `row_${row}`;\n  if (id !== undefined) { if (seenIds.has(id)) errs.push(`duplicate ${C.ID_FIELD} \"${id}\" (first seen in row ${seenIds.get(id)}; the first occurrence wins)`); else seenIds.set(id, row); }\n  if (errs.length) failed.push({ row, record_id, status: 'invalid', failure_type: 'validation', reasons: errs, record: rec });\n  else valid.push({ row, record_id, data: out, record: rec });\n});\nreturn [{ json: { ok: true, batch_id: b.batch_id, source: b.source, total: b.records.length, valid, failed } }];"
+      },
+      "id": "g-4",
+      "name": "Validate Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        0
+      ],
+      "notes": "THE ENGINE (do not edit). Validates and cleans every record against SCHEMA_JSON in one pass; nothing is loaded yet. One bad record never affects another. Dates must be real ISO dates; the first record with an id wins and later copies are rejected with a reason. To add your own rules, edit the Custom Rules node instead."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// CUSTOM RULES: the node for client-specific logic. Edit only between the EDIT lines.\n// Every function receives ONE cleaned record:\n//   item.data   = the record after SCHEMA_JSON validation and cleaning (change it in transforms)\n//   item.record = the record exactly as it was received (read-only, kept for the dead-letter store)\n//   item.row    = its position in the batch\n// and a second argument  ctx = { batch_id, source, total }.\n// Whatever you do here, the next node (Enforce Rules) re-checks the result: a record can\n// never be lost, its id can never change, and a broken rule rejects only that record.\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst transforms = [\n  // Run first, in order. Change item.data in place.\n  // (item) => { item.data.email = item.data.email.replace(/\\+[^@]*@/, '@'); },\n];\nconst rules = [\n  // Return a sentence to REJECT the record, or nothing to accept it.\n  // (item) => (item.data.amount > 10000 ? 'amount over 10000 needs manual approval' : null),\n];\nconst payload = (item, ctx) => item.data;     // what is SENT to the destination (default: the cleaned record)\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst P = $input.first().json;\nconst ctx = { batch_id: P.batch_id, source: P.source, total: P.total };\nconst valid = [], failed = [...P.failed];\nfor (const item of P.valid) {\n  const reasons = [];\n  try {\n    for (const t of transforms) t(item, ctx);\n    for (const r of rules) { const why = r(item, ctx); if (why) reasons.push(String(why)); }\n    if (!reasons.length) item.payload = payload(item, ctx);\n  } catch (err) { reasons.push('custom rule error: ' + String((err && err.message) || err).slice(0, 200)); }\n  if (reasons.length) failed.push({ row: item.row, record_id: item.record_id, status: 'invalid', failure_type: 'validation', reasons, record: item.record });\n  else valid.push(item);\n}\nreturn [{ json: { batch_id: P.batch_id, source: P.source, total: P.total, valid, failed } }];"
+      },
+      "id": "g-5",
+      "name": "Custom Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "EDIT ME. Client-specific logic goes here: transforms (change a record), rules (reject a record with a reason) and payload (what is sent). Only edit between the EDIT lines. Enforce Rules checks the result afterwards.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst V = $('Validate Records').first().json;     // the engine's verdicts: the authority\nconst U = $input.first().json;                    // what Custom Rules returned\nconst fail500 = (details) => [{ json: { ok: false, http_status: 500, response_body: { error: 'custom_rules_failed', details }, notifications: [] } }];\nif (U.error !== undefined || !Array.isArray(U.valid) || !Array.isArray(U.failed)) return fail500([String((U.error && (U.error.message || U.error)) || 'it did not return {valid, failed}').slice(0, 300)]);\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst fromRules = new Map(U.valid.map((x) => [x && x.row, x]));\nconst rejected = new Map(U.failed.map((x) => [x && x.row, x]));\nconst valid = [], failed = [...V.failed];\nconst reject = (item, reasons) => failed.push({ row: item.row, record_id: item.record_id, status: 'invalid', failure_type: 'validation', reasons, record: item.record });\nfor (const orig of V.valid) {\n  const got = fromRules.get(orig.row);\n  if (!got) {\n    const r = rejected.get(orig.row);\n    const reasons = r && Array.isArray(r.reasons) && r.reasons.length ? r.reasons.map((x) => String(x).slice(0, 300)) : ['the record went missing in the Custom Rules node'];\n    reject(orig, reasons); continue;\n  }\n  if (rejected.has(orig.row)) { reject(orig, ['the record was returned as both valid and failed by the Custom Rules node']); continue; }\n  const id = got.data && got.data[C.ID_FIELD];\n  if (!isObj(got.data) || String(id) !== orig.record_id) { reject(orig, [`custom rules must not change ${C.ID_FIELD} (record ${orig.record_id})`]); continue; }\n  let p = got.payload, okPayload = isObj(p);\n  if (okPayload) { try { JSON.stringify(p); } catch (e) { okPayload = false; } }\n  if (!okPayload) { reject(orig, ['payload() must return a plain object']); continue; }\n  valid.push({ row: orig.row, record_id: orig.record_id, data: got.data, payload: p, record: orig.record });\n}\nfailed.sort((a, b) => a.row - b.row);\nreturn [{ json: { ok: true, batch_id: V.batch_id, source: V.source, total: V.total, valid, failed } }];"
+      },
+      "id": "g-6",
+      "name": "Enforce Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        0
+      ],
+      "notes": "THE GUARD (do not edit). Re-checks what Custom Rules produced: every record accounted for exactly once, ids unchanged, payload a JSON object. A broken Custom Rules node gives a clear 500 instead of loading anything."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-7",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-7",
+      "name": "Rules OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-8",
+      "name": "Respond Early",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3080,
+        0
+      ],
+      "notes": "Replies to batches that stop early: 400 (bad batch), 401, 500 (bad CONFIG)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst P = $input.first().json;\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst headers = JSON.parse(C.SERVICE_HEADERS_JSON || '{}');\nconst base = (u) => String(u).replace(/\\/+$/, '');\nconst call = async (method, url, body, extraHeaders, timeout) => {\n  try {\n    const r = await this.helpers.httpRequest({ method, url, body, json: true, headers: { ...headers, ...(extraHeaders || {}) }, timeout, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return { status: r.statusCode, body: r.body };\n  } catch (e) { return { status: null, error: String((e && e.message) || e).slice(0, 160) }; }\n};\nconst started = Date.now();\nconst RM = $('Claim Dead Letters').isExecuted ? $('Claim Dead Letters').first().json.replay.map : null;\nconst budgetMs = Number(C.MAX_LOAD_SECONDS) * 1000;\nconst results = P.failed.map((f) => ({ row: f.row, record_id: f.record_id, status: f.status, failure_type: f.failure_type, reasons: f.reasons, raw: f.record }));\nconst breaker = { tripped: false, open_at_start: false, status_check: C.BREAKER_API_URL ? 'ok' : 'not_configured', failures_reported: 0 };\n\nconst externalOpen = async () => {\n  if (!C.BREAKER_API_URL) return false;\n  const r = await call('GET', base(C.BREAKER_API_URL) + '/status', undefined, {}, Number(C.REQUEST_TIMEOUT_MS));\n  if (r.status === 200 && r.body && typeof r.body.open === 'boolean') { breaker.status_check = 'ok'; return r.body.open; }\n  breaker.status_check = 'unreachable';        // the breaker lookup is advisory: if it cannot be read we carry on (fail open)\n  return false;\n};\nlet skipReason = null;\nif (await externalOpen()) { skipReason = 'circuit breaker is open: the destination was reported unhealthy, so nothing was sent'; breaker.open_at_start = true; }\nlet consecutive = 0;\nconst isTransient = (r) => r.status === null || r.status >= 500 || r.status === 408 || r.status === 429;\n\nfor (const item of P.valid) {\n  const base_r = { row: item.row, record_id: item.record_id, raw: item.record };\n  if (!skipReason && Date.now() - started > budgetMs) skipReason = `batch time budget of ${C.MAX_LOAD_SECONDS}s used up; the rest were not attempted`;\n  if (skipReason) { results.push({ ...base_r, status: 'skipped', failure_type: breaker.tripped || breaker.open_at_start ? 'circuit_open' : 'time_budget', reasons: [skipReason] }); continue; }\n  let r, attempts = 0;\n  const idem = RM && RM[item.row] ? RM[item.row].idem : `${P.batch_id}:${item.record_id}`;   // a replayed record keeps the key of its ORIGINAL batch, so a record that actually reached the destination is never stored twice\n  while (true) {\n    attempts++;\n    r = await call('POST', base(C.DESTINATION_API_URL) + '/records', item.payload, { 'idempotency-key': idem }, Number(C.LOAD_TIMEOUT_MS));\n    if (r.status !== null && r.status >= 200 && r.status < 300) break;\n    if (!isTransient(r) || attempts >= Number(C.LOAD_MAX_ATTEMPTS)) break;\n    if (Date.now() - started > budgetMs) break;\n    await sleep(Number(C.LOAD_RETRY_BACKOFF_MS) * Math.pow(2, attempts - 1));\n  }\n  const ok = r.status !== null && r.status >= 200 && r.status < 300;\n  if (ok) { consecutive = 0; results.push({ ...base_r, status: 'loaded', reasons: [], attempts }); continue; }\n  const why = r.status === null ? 'no response' : 'HTTP ' + r.status;\n  if (!isTransient(r)) {\n    // the destination understood and refused THIS record: a data problem, not an outage. No retry, no breaker.\n    results.push({ ...base_r, status: 'rejected', failure_type: 'destination_rejected', reasons: [`the destination rejected the record (${why})`], attempts });\n    continue;\n  }\n  consecutive++;\n  results.push({ ...base_r, status: 'load_failed', failure_type: 'load', reasons: [`the destination failed after ${attempts} attempt${attempts === 1 ? '' : 's'} (${why})`], attempts });\n  if (C.BREAKER_API_URL) { await call('POST', base(C.BREAKER_API_URL) + '/record-failure', { reason: 'destination_load_failed', status: r.status, batch_id: P.batch_id }, {}, Number(C.REQUEST_TIMEOUT_MS)); breaker.failures_reported++; if (await externalOpen()) { skipReason = 'circuit breaker opened during this batch; the rest were not attempted'; breaker.tripped = true; continue; } }\n  if (consecutive >= Number(C.BREAKER_TRIP_AFTER)) { skipReason = `${consecutive} loads in a row failed; stopped to avoid piling onto a failing destination`; breaker.tripped = true; }\n}\nresults.sort((a, b) => a.row - b.row);\nreturn [{ json: { batch_id: P.batch_id, source: P.source, total: P.total, results, breaker, budget_exceeded: Date.now() - started > budgetMs } }];"
+      },
+      "id": "g-9",
+      "name": "Load Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        150
+      ],
+      "notes": "THE LOADER. Loads valid records one at a time and keeps state between them, which n8n's normal node-by-node flow cannot: retries with back-off on transient failures, a destination that refuses a record (4xx) is a data problem not an outage, N failures in a row (or the shared breaker opening) stops the rest of the batch, and a time budget keeps the caller from waiting forever. Each record carries an idempotency key batch_id:id."
+    },
+    {
+      "parameters": {
+        "jsCode": "const D = $input.first().json;\nconst items = D.results.filter((r) => r.status !== 'loaded').map((r) => ({ row: r.row, record_id: r.record_id, status: r.status, failure_type: r.failure_type, reasons: r.reasons, record: r.raw }));\nconst replay = $('Claim Dead Letters').isExecuted;   // a replay updates the EXISTING dead letters; it never files new ones\nreturn [{ json: { ...D, dl_items: items, has_dl: !replay && items.length > 0 } }];"
+      },
+      "id": "g-10",
+      "name": "Dead Letter Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ],
+      "notes": "Collects everything that was not loaded, with the original record, for ONE dead-letter call."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-11",
+              "leftValue": "={{ $json.has_dl && !!$('CONFIG').first().json.DEAD_LETTER_API_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-11",
+      "name": "Any To Dead-Letter?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.DEAD_LETTER_API_URL.replace(/\\/+$/, '') + '/dead-letters' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { batch_id: $json.batch_id, source: $json.source, received_at: new Date().toISOString(), items: $json.dl_items } }}"
+      },
+      "id": "g-12",
+      "name": "Save Dead Letters",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4200,
+        0
+      ],
+      "notes": "POST /dead-letters {batch_id, source, received_at, items:[{row, record_id, status, failure_type, reasons, record}]} -> 2xx. One call per batch (the original made one per record and ignored failures).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-13",
+              "leftValue": "={{ $json.error !== undefined || typeof $json.statusCode !== 'number' || $json.statusCode >= 500 || $json.statusCode === 408 || $json.statusCode === 429 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-13",
+      "name": "Save Dead Letters Transient?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        0
+      ],
+      "notes": "One retry for a transient failure."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.DEAD_LETTER_API_URL.replace(/\\/+$/, '') + '/dead-letters' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { batch_id: $('Dead Letter Items').first().json.batch_id, source: $('Dead Letter Items').first().json.source, received_at: new Date().toISOString(), items: $('Dead Letter Items').first().json.dl_items } }}"
+      },
+      "id": "g-14",
+      "name": "Save Dead Letters (retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4760,
+        0
+      ],
+      "notes": "The one retry.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst C = $('CONFIG').first().json;\nconst D = $('Dead Letter Items').first().json;\nconst r = $input.first().json;\nconst RP = $('Claim Dead Letters').isExecuted ? { R: $('Claim Dead Letters').first().json.replay, S: $('Settle Replay').first().json.replay_settle } : null;\nlet dl = 'not_needed';\nif (D.has_dl) {\n  if (!C.DEAD_LETTER_API_URL) dl = 'not_configured';\n  else dl = (typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300) ? 'saved' : 'failed';\n}\nconst counts = { total: D.total, loaded: 0, invalid: 0, rejected: 0, load_failed: 0, skipped: 0 };\nfor (const x of D.results) counts[x.status]++;\nconst status = counts.loaded === counts.total ? 'completed' : counts.loaded > 0 ? 'partial' : 'failed';\nconst notes = [];\nconst id = D.batch_id;\nif (counts.load_failed > 0 || counts.skipped > 0) notes.push({ text: `Batch ${id} had operational failures: ${counts.load_failed} load_failed, ${counts.skipped} skipped (of ${counts.total} total)${D.breaker.tripped || D.breaker.open_at_start ? '; the circuit breaker stopped the load' : ''}${D.budget_exceeded ? '; the time budget ran out' : ''}.` });\nif (RP) {\n  const S = RP.S;\n  notes.push({ text: `Replay ${id}: ${D.total} record(s) were re-run from the dead-letter store: ${counts.loaded} loaded, ${D.total - counts.loaded} still not loaded.` });\n  if (S.resolve_failed.length) notes.push({ text: `Replay ${id}: ${S.resolve_failed.length} record(s) could NOT be updated in the dead-letter store (${S.resolve_failed.join(', ')}). They will show up as open again; the destination de-duplicates on the idempotency key, so replaying them again is harmless.` });\n}\nif (dl === 'failed') notes.push({ text: `Batch ${id}: ${D.dl_items.length} record(s) could NOT be saved to the dead-letter store. They are only in the response to the caller.` });\nreturn [{ json: { http_status: 200,\n  response_body: { batch_id: id, status, counts, dead_letter: dl, breaker: { tripped: D.breaker.tripped, open_at_start: D.breaker.open_at_start, status_check: D.breaker.status_check },\n    results: D.results.map((x) => ({ row: x.row, record_id: x.record_id, status: x.status, ...(RP && RP.R.map[x.row] ? { dead_letter_id: RP.R.map[x.row].id } : {}), ...(x.failure_type ? { failure_type: x.failure_type } : {}), ...(x.reasons.length ? { reasons: x.reasons } : {}) })),\n    ...(RP ? { replay: { claimed: D.total, skipped_already_claimed: RP.R.skipped, loaded: counts.loaded, still_open: RP.S.still_open, released: RP.S.released, resolve_failed: RP.S.resolve_failed } } : {}) },\n  notifications: notes } }];"
+      },
+      "id": "g-15",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ],
+      "notes": "The one response: per-record outcome (without echoing the data back), counts, whether the dead letters were saved, and what the breaker did. status = completed | partial | failed (HTTP stays 200: the batch was processed). Ops is alerted only for operational trouble (load failures, skips, lost dead letters), never for bad source data."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-16",
+      "name": "Respond Batch",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5320,
+        0
+      ],
+      "notes": "The single reply for a processed batch."
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst C = $('CONFIG').first().json;\nif (!C.SLACK_WEBHOOK_URL) return [];\nreturn ($input.first().json.notifications || []).map((n) => ({ json: { text: '[ETL] ' + esc(n.text) } }));"
+      },
+      "id": "g-17",
+      "name": "Expand Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        0
+      ],
+      "notes": "Runs AFTER the reply. One Slack message per problem; nothing if Slack is not configured."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-18",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5880,
+        0
+      ],
+      "notes": "Slack-compatible incoming webhook. A failed alert is ignored on purpose.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "etl/replay",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-19",
+      "name": "Webhook: Replay",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        150
+      ],
+      "notes": "POST {ids? | batch_id? , failure_type?, limit?} with header x-replay-token. Re-runs open dead letters through the same validation and load. Off (403) unless CONFIG.REPLAY_ENABLED is true.",
+      "webhookId": "etl-replay"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-20",
+              "leftValue": "={{ String($json.webhookUrl || '').endsWith('/etl/replay') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-20",
+      "name": "Is Replay?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "Both webhooks share the one CONFIG node, then split here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst bad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nif (!url(C.DESTINATION_API_URL)) bad.push('CONFIG.DESTINATION_API_URL must start with http:// or https://');\nfor (const k of ['BREAKER_API_URL', 'DEAD_LETTER_API_URL', 'SLACK_WEBHOOK_URL']) if (C[k] && !url(C[k])) bad.push(`CONFIG.${k} must be blank or start with http:// or https://`);\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nfor (const k of ['MAX_BATCH_RECORDS', 'LOAD_MAX_ATTEMPTS', 'BREAKER_TRIP_AFTER', 'LOAD_TIMEOUT_MS', 'MAX_LOAD_SECONDS', 'REQUEST_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (!(Number(C.LOAD_RETRY_BACKOFF_MS) >= 0)) bad.push('CONFIG.LOAD_RETRY_BACKOFF_MS must be a number >= 0');\nconst TYPES = ['id', 'string', 'email', 'number', 'integer', 'currency', 'date', 'boolean'];\nlet schema = [];\ntry {\n  const raw = JSON.parse(C.SCHEMA_JSON);\n  if (!Array.isArray(raw) || !raw.length) throw new Error('must be a non-empty JSON array');\n  const seen = new Set();\n  raw.forEach((f, i) => {\n    const w = `SCHEMA_JSON[${i}]`;\n    if (!isObj(f)) { bad.push(`${w} must be an object`); return; }\n    if (typeof f.name !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(f.name)) bad.push(`${w}.name must be 1-64 characters: letters, digits and _ . -`);\n    else if (seen.has(f.name)) bad.push(`${w}.name \"${f.name}\" is used twice`); else seen.add(f.name);\n    if (f.from !== undefined && (typeof f.from !== 'string' || !f.from.trim() || f.from.length > 100)) bad.push(`${w}.from must be the name of the field in the incoming record (1-100 characters)`);\n    if (!TYPES.includes(f.type)) bad.push(`${w}.type must be one of ${TYPES.join(', ')}`);\n    for (const k of ['min', 'max', 'decimals', 'maxLength']) if (f[k] !== undefined && typeof f[k] !== 'number') bad.push(`${w}.${k} must be a number`);\n    if (f.enum !== undefined && (!Array.isArray(f.enum) || !f.enum.length)) bad.push(`${w}.enum must be a non-empty array`);\n    if (f.pattern !== undefined) { try { new RegExp(f.pattern); } catch (e) { bad.push(`${w}.pattern is not a valid regular expression`); } }\n    schema.push(f);\n  });\n  if (!schema.some((f) => f.name === C.ID_FIELD)) bad.push(`CONFIG.ID_FIELD \"${C.ID_FIELD}\" is not a field in SCHEMA_JSON`);\n} catch (e) { bad.push('CONFIG.SCHEMA_JSON is not valid: ' + e.message); }\nconst inp = $input.first().json;\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: [] } }];\nif (C.REPLAY_ENABLED !== true) return reject(403, 'replay_disabled');\nconst rbad = [];\nif (typeof C.REPLAY_AUTH_TOKEN !== 'string' || C.REPLAY_AUTH_TOKEN.length < 8) rbad.push('CONFIG.REPLAY_AUTH_TOKEN must be set (at least 8 characters) when REPLAY_ENABLED is true');\nif (!C.DEAD_LETTER_API_URL) rbad.push('CONFIG.DEAD_LETTER_API_URL must be set: replay reads the dead-letter store');\nconst cap = Math.min(200, Number(C.MAX_BATCH_RECORDS));\nif (!(Number.isInteger(Number(C.REPLAY_MAX_PER_RUN)) && Number(C.REPLAY_MAX_PER_RUN) >= 1 && Number(C.REPLAY_MAX_PER_RUN) <= cap)) rbad.push(`CONFIG.REPLAY_MAX_PER_RUN must be a whole number from 1 to ${cap} (not above MAX_BATCH_RECORDS)`);\nif (!(Number(C.REPLAY_LEASE_SECONDS) > Number(C.MAX_LOAD_SECONDS))) rbad.push('CONFIG.REPLAY_LEASE_SECONDS must be larger than MAX_LOAD_SECONDS (a claimed record must stay claimed while it is being loaded)');\nif (rbad.length) return reject(500, 'replay_misconfigured', rbad);\nif ((inp.headers || {})['x-replay-token'] !== C.REPLAY_AUTH_TOKEN) return reject(401, 'unauthorized');\nif (bad.length) return reject(500, 'etl_misconfigured', bad);\nconst b = inp.body === undefined || inp.body === null ? {} : inp.body;\nif (!isObj(b)) return reject(400, 'replay_validation_failed', ['body must be a JSON object']);\nconst errors = [];\nconst idOk = (v) => typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v);\nconst FTYPES = ['validation', 'destination_rejected', 'load', 'circuit_open', 'time_budget'];\nfor (const k of Object.keys(b)) if (!['ids', 'batch_id', 'failure_type', 'limit'].includes(k)) errors.push(`unknown field \"${k}\" (allowed: ids, batch_id, failure_type, limit)`);\nconst max = Number(C.REPLAY_MAX_PER_RUN);\nif (b.ids !== undefined && (!Array.isArray(b.ids) || b.ids.length < 1 || b.ids.length > max || !b.ids.every(idOk))) errors.push(`ids must be 1-${max} dead-letter ids (letters, digits and . _ : -)`);\nif (b.batch_id !== undefined && !idOk(b.batch_id)) errors.push('batch_id must be 1-128 characters: letters, digits and . _ : -');\nif (b.failure_type !== undefined && !FTYPES.includes(b.failure_type)) errors.push('failure_type must be one of ' + FTYPES.join(', '));\nif (b.limit !== undefined && !(Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= max)) errors.push(`limit must be a whole number from 1 to ${max}`);\nif (b.ids !== undefined && (b.batch_id !== undefined || b.failure_type !== undefined || b.limit !== undefined)) errors.push('ids cannot be combined with batch_id, failure_type or limit');\nif (errors.length) return reject(400, 'replay_validation_failed', errors);\nreturn [{ json: { ok: true, req: { ids: b.ids || null, batch_id: b.batch_id || null, failure_type: b.failure_type || null, limit: b.limit || null } } }];"
+      },
+      "id": "g-21",
+      "name": "Plan Replay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        150
+      ],
+      "notes": "Order: switch (403), settings (500), token (401), CONFIG (500), body (400). Its own token (x-replay-token), separate from the ingest token."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-22",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-22",
+      "name": "Replay Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst req = $input.first().json.req;\nconst headers = JSON.parse(C.SERVICE_HEADERS_JSON || '{}');\nconst base = (u) => String(u).replace(/\\/+$/, '');\nconst T = Number(C.REQUEST_TIMEOUT_MS);\nconst call = async (method, url, body) => {\n  try {\n    const r = await this.helpers.httpRequest({ method, url, body, json: true, headers, timeout: T, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return { status: r.statusCode, body: r.body };\n  } catch (e) { return { status: null, error: String((e && e.message) || e).slice(0, 160) }; }\n};\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst idOk = (v) => typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v);\nconst early = (status, error, extra) => [{ json: { ok: false, http_status: status, response_body: { error, ...(extra || {}) }, notifications: [] } }];\nconst why = (r) => (r.status === null ? 'no response' : 'HTTP ' + r.status);\nconst dl = base(C.DEAD_LETTER_API_URL);\nconst limit = Math.min(req.limit || Number(C.REPLAY_MAX_PER_RUN), Number(C.REPLAY_MAX_PER_RUN));\n// ---- 1. which dead letters? (by id, or the oldest open ones that match the filters)\nlet cands = [];\nif (req.ids) {\n  for (const id of req.ids) {\n    const r = await call('GET', `${dl}/dead-letters/${encodeURIComponent(id)}`);\n    if (r.status === 404) continue;\n    if (!(r.status === 200 && r.body && isObj(r.body.item))) return early(502, 'replay_unavailable', { reason: 'the dead-letter store could not be read (' + why(r) + ')' });\n    if (r.body.item.id === id) cands.push(r.body.item);\n  }\n} else {\n  const qs = ['state=open', 'limit=' + limit];\n  if (req.batch_id) qs.push('batch_id=' + encodeURIComponent(req.batch_id));\n  if (req.failure_type) qs.push('failure_type=' + encodeURIComponent(req.failure_type));\n  const r = await call('GET', `${dl}/dead-letters?${qs.join('&')}`);\n  if (!(r.status === 200 && r.body && Array.isArray(r.body.items))) return early(502, 'replay_unavailable', { reason: 'the dead-letter store could not be read (' + why(r) + ')' });\n  cands = r.body.items;\n}\n// do not trust the store's filtering: keep only open items that really match what was asked for\nconst seen = new Set();\ncands = cands.filter((x) => isObj(x) && idOk(x.id) && x.state === 'open' && isObj(x.record) && idOk(x.batch_id) && typeof x.record_id === 'string' && x.record_id !== ''\n  && (!req.batch_id || x.batch_id === req.batch_id) && (!req.failure_type || x.failure_type === req.failure_type) && !seen.has(x.id) && seen.add(x.id)).slice(0, limit);\n// ---- 2. claim each one atomically: two replays at the same time can never run the same record\nconst claimed = [], skipped = [];\nfor (const x of cands) {\n  const c = await call('POST', `${dl}/dead-letters/${encodeURIComponent(x.id)}/claim`, { lease_seconds: Number(C.REPLAY_LEASE_SECONDS) });\n  const won = c.status === 200 && c.body && c.body.claimed === true;\n  if (won && isObj(c.body.item) && c.body.item.id === x.id && isObj(c.body.item.record)) claimed.push(c.body.item); else skipped.push(x.id);\n}\nif (!claimed.length) return [{ json: { ok: false, http_status: 200, response_body: { status: 'nothing_to_replay', claimed: 0, skipped_already_claimed: skipped.length }, notifications: [] } }];\nconst map = {};\nconst records = claimed.map((x, i) => { map[i] = { id: x.id, orig_batch_id: x.batch_id, idem: `${x.batch_id}:${x.record_id}` }; return x.record; });\nreturn [{ json: { ok: true, batch: { batch_id: 'replay-' + Date.now().toString(36), source: 'replay', records }, replay: { map, skipped: skipped.length } } }];"
+      },
+      "id": "g-23",
+      "name": "Claim Dead Letters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ],
+      "notes": "Lists the open dead letters (or fetches the ids you gave), re-checks them itself, and CLAIMS each through the store's atomic claim call. Only claimed records are run. They then go through the same validation, rules and loader as a normal batch, under the idempotency key of their original batch."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst D = $input.first().json;\nif (!$('Claim Dead Letters').isExecuted) return [{ json: D }];     // a normal batch: nothing to do\nconst R = $('Claim Dead Letters').first().json.replay;\nconst headers = JSON.parse(C.SERVICE_HEADERS_JSON || '{}');\nconst base = (u) => String(u).replace(/\\/+$/, '');\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst call = async (method, url, body) => {\n  try {\n    const r = await this.helpers.httpRequest({ method, url, body, json: true, headers, timeout: Number(C.REQUEST_TIMEOUT_MS), returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return { status: r.statusCode, body: r.body };\n  } catch (e) { return { status: null, error: String((e && e.message) || e).slice(0, 160) }; }\n};\nconst isOk = (r) => r.status !== null && r.status >= 200 && r.status < 300;\nconst S = { still_open: 0, released: 0, resolve_failed: [] };\nfor (const r of D.results) {\n  const m = R.map[r.row];\n  if (!m) continue;\n  const body = r.status === 'loaded' ? { outcome: 'loaded', replay_batch_id: D.batch_id }\n    : r.status === 'skipped' ? { outcome: 'released', replay_batch_id: D.batch_id }\n    : { outcome: 'failed', status: r.status, failure_type: r.failure_type, reasons: r.reasons, replay_batch_id: D.batch_id };\n  const url = `${base(C.DEAD_LETTER_API_URL)}/dead-letters/${encodeURIComponent(m.id)}/resolve`;\n  let x = await call('POST', url, body);\n  if (!isOk(x) && (x.status === null || x.status >= 500)) { await sleep(300); x = await call('POST', url, body); }\n  if (!isOk(x)) { S.resolve_failed.push(m.id); continue; }\n  if (body.outcome === 'failed') S.still_open++; else if (body.outcome === 'released') S.released++;\n}\nreturn [{ json: { ...D, replay_settle: S } }];"
+      },
+      "id": "g-24",
+      "name": "Settle Replay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        0
+      ],
+      "notes": "After a replay: tells the dead-letter store what happened to each record (loaded = resolved; failed = stays open with the new reason and one more attempt; skipped by the breaker = released, not counted as an attempt). A record that loaded but could not be marked resolved is listed and reported to ops (it will be replayed again, which is safe because of the idempotency key)."
+    },
+    {
+      "parameters": {
+        "content": "## Data Validation ETL Pipeline\n**Setup (about 10 minutes)**\n1. Run the backing services (a reference implementation is included: `node 03-data-validation-etl-mock-server.js`, port 4900): destination, circuit breaker, dead-letter store, Slack stand-in.\n2. Open **CONFIG**: edit `SCHEMA_JSON` (the fields your records must have; the default is id, email, amount, currency, created_at), `ID_FIELD`, the service URLs, optional `SLACK_WEBHOOK_URL` and `ETL_AUTH_TOKEN`.\n3. Activate. Send `POST /webhook/etl/ingest` with `{\"batch_id\":\"b-1\",\"source\":\"partner-a\",\"records\":[...]}`.\n\n**Each batch:** validate the envelope -> validate and clean every record -> load the valid ones one at a time (retries, breaker, time budget) -> save everything that failed to the dead-letter store (one call) -> reply with per-record results -> alert ops about operational trouble only.",
+        "height": 380,
+        "width": 760,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -560
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Ingest Batch": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Replay": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Is Replay?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Replay?": {
+      "main": [
+        [
+          {
+            "node": "Plan Replay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Plan Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Batch": {
+      "main": [
+        [
+          {
+            "node": "Plan OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Replay": {
+      "main": [
+        [
+          {
+            "node": "Replay Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay Valid?": {
+      "main": [
+        [
+          {
+            "node": "Claim Dead Letters",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Dead Letters": {
+      "main": [
+        [
+          {
+            "node": "Plan OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan OK?": {
+      "main": [
+        [
+          {
+            "node": "Validate Records",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Records": {
+      "main": [
+        [
+          {
+            "node": "Custom Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Custom Rules": {
+      "main": [
+        [
+          {
+            "node": "Enforce Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce Rules": {
+      "main": [
+        [
+          {
+            "node": "Rules OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rules OK?": {
+      "main": [
+        [
+          {
+            "node": "Load Records",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Records": {
+      "main": [
+        [
+          {
+            "node": "Dead Letter Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead Letter Items": {
+      "main": [
+        [
+          {
+            "node": "Settle Replay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settle Replay": {
+      "main": [
+        [
+          {
+            "node": "Any To Dead-Letter?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any To Dead-Letter?": {
+      "main": [
+        [
+          {
+            "node": "Save Dead Letters",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Dead Letters": {
+      "main": [
+        [
+          {
+            "node": "Save Dead Letters Transient?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Dead Letters Transient?": {
+      "main": [
+        [
+          {
+            "node": "Save Dead Letters (retry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Dead Letters (retry)": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Batch": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Notifications": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

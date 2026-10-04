@@ -1,0 +1,1856 @@
+{
+  "name": "Multi-Model LLM Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "llm/complete",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-0",
+      "name": "LLM Request Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "POST {prompt, task_type?: simple|code|complex, max_tokens?, require_json?}. One Respond node answers every path.",
+      "webhookId": "llm-complete"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "TIERS_JSON",
+              "value": "[{\"name\": \"local\", \"kind\": \"ollama\", \"url\": \"http://localhost:4500/ollama/api/generate\", \"model\": \"llama3\", \"handles\": [\"simple\", \"code\"], \"paid\": false, \"timeout_ms\": 20000}, {\"name\": \"midtier\", \"kind\": \"openai\", \"url\": \"http://localhost:4500/openai/v1/chat/completions\", \"model\": \"mid-model\", \"api_key\": \"\", \"paid\": true, \"price_in_per_mtok\": 0.5, \"price_out_per_mtok\": 1.5, \"timeout_ms\": 30000}, {\"name\": \"premium\", \"kind\": \"anthropic\", \"url\": \"http://localhost:4500/anthropic/v1/messages\", \"model\": \"premium-model\", \"api_key\": \"\", \"paid\": true, \"price_in_per_mtok\": 3, \"price_out_per_mtok\": 15, \"timeout_ms\": 60000}]",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "CACHE_API_URL",
+              "value": "http://localhost:4500",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "BREAKER_API_URL",
+              "value": "http://localhost:4500",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "BUDGET_API_URL",
+              "value": "http://localhost:4500",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "ROUTER_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-7",
+              "name": "CACHE_ENABLED",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-8",
+              "name": "BREAKER_ENABLED",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-9",
+              "name": "BUDGET_ENABLED",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-10",
+              "name": "CACHE_TTL_SECONDS",
+              "value": 3600,
+              "type": "number"
+            },
+            {
+              "id": "cfg-11",
+              "name": "DAILY_BUDGET_USD",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "cfg-12",
+              "name": "BUDGET_FAIL_MODE",
+              "value": "closed",
+              "type": "string"
+            },
+            {
+              "id": "cfg-13",
+              "name": "BREAKER_FAILURE_THRESHOLD",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "cfg-14",
+              "name": "BREAKER_COOLDOWN_SECONDS",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "BREAKER_MAX_COOLDOWN_SECONDS",
+              "value": 600,
+              "type": "number"
+            },
+            {
+              "id": "cfg-16",
+              "name": "PROBE_CLAIM_TTL_SECONDS",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "cfg-17",
+              "name": "RETRIES_PER_TIER",
+              "value": 1,
+              "type": "number"
+            },
+            {
+              "id": "cfg-18",
+              "name": "RETRY_BACKOFF_MS",
+              "value": 500,
+              "type": "number"
+            },
+            {
+              "id": "cfg-19",
+              "name": "RETRY_BACKOFF_MAX_MS",
+              "value": 4000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-20",
+              "name": "RETRY_JITTER_PERCENT",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "cfg-21",
+              "name": "RETRY_MAX_TOTAL_WAIT_MS",
+              "value": 8000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-22",
+              "name": "RETRY_HONOUR_RETRY_AFTER",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-23",
+              "name": "MAX_PROMPT_CHARS",
+              "value": 32000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-24",
+              "name": "DEFAULT_MAX_TOKENS",
+              "value": 1024,
+              "type": "number"
+            },
+            {
+              "id": "cfg-25",
+              "name": "MAX_ALLOWED_TOKENS",
+              "value": 8192,
+              "type": "number"
+            },
+            {
+              "id": "cfg-26",
+              "name": "MIN_RESPONSE_CHARS",
+              "value": 1,
+              "type": "number"
+            },
+            {
+              "id": "cfg-27",
+              "name": "INCLUDE_ATTEMPTS",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-28",
+              "name": "ALERT_COOLDOWN_SECONDS",
+              "value": 300,
+              "type": "number"
+            },
+            {
+              "id": "cfg-29",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 5000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. Tiers (TIERS_JSON), service URLs, budget, breaker and cache settings. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// ROUTING POLICY: the node for HOW requests are routed. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. Every request is checked against it, and a mistake\n// gives a clear 500 (router_misconfigured, lines start \"Policy:\") before any provider is called.\n// What you cannot change here, on purpose: a task_type sent by the caller always wins, only\n// tiers that exist in CONFIG.TIERS_JSON can be used, budgets / breakers / cache / quality\n// checks always apply, and a policy can only make limits tighter than CONFIG.\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst policy = {\n  // When the caller sends NO task_type, guess one from the prompt. The first rule that matches wins.\n  // A rule: { task_type, contains_any: ['text', ...] (any, ignoring case), min_chars, max_chars }\n  // (every condition you give must hold; give at least one).\n  classify: [\n    // { task_type: 'code', contains_any: ['def ', 'function ', 'stack trace'] },\n    // { task_type: 'complex', min_chars: 2000 },\n  ],\n  // Used when the caller sends none and no rule matches: 'simple', 'code' or 'complex'.\n  default_task_type: 'simple',\n\n  // Added first to the system message of EVERY request (optional).\n  system: '',\n\n  // Per task type (simple / code / complex). Everything is optional.\n  //   tiers:            use ONLY these tiers, in THIS order (names from CONFIG.TIERS_JSON)\n  //   max_tokens:       the answer length used when the caller sends none\n  //   max_tokens_limit: callers asking for more get a 400 (must not exceed CONFIG.MAX_ALLOWED_TOKENS)\n  //   system:           extra system message for this type\n  //   require_json:     true = always demand JSON for this type (it cannot be turned off here)\n  by_task_type: {\n    // complex: { tiers: ['premium'], max_tokens: 2048, max_tokens_limit: 4096, system: 'You are a careful analyst.', require_json: true },\n  },\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst norm = { classify: pick(policy, 'classify', []), default_task_type: pick(policy, 'default_task_type', 'simple'), system: pick(policy, 'system', ''), by_task_type: pick(policy, 'by_task_type', {}),\n  _is_obj: policy !== null && typeof policy === 'object' && !Array.isArray(policy), _raw_keys: Object.keys(policy || {}) };\nreturn [{ json: { ...$input.first().json, policy: norm } }];\n"
+      },
+      "id": "g-2",
+      "name": "Routing Policy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "EDIT ME for routing rules: guess the task type from the prompt, which tiers (and in which order) serve each task type, default and maximum answer length, system messages, forcing JSON. Data only; checked on every request. It cannot override the caller's task_type, budgets, breakers or quality checks."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst req = $('LLM Request Webhook').first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: [] } }];\n\nif (C.ROUTER_AUTH_TOKEN && (req.headers || {})['x-router-token'] !== C.ROUTER_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity: say what is wrong now, not three nodes later\nconst bad = [];\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nif (C.CACHE_ENABLED && !url(C.CACHE_API_URL)) bad.push('CONFIG.CACHE_API_URL must start with http(s):// (or set CACHE_ENABLED=false)');\nif (C.BREAKER_ENABLED && !url(C.BREAKER_API_URL)) bad.push('CONFIG.BREAKER_API_URL must start with http(s):// (or set BREAKER_ENABLED=false)');\nif (C.BUDGET_ENABLED && !url(C.BUDGET_API_URL)) bad.push('CONFIG.BUDGET_API_URL must start with http(s):// (or set BUDGET_ENABLED=false)');\nif (C.SLACK_WEBHOOK_URL && !url(C.SLACK_WEBHOOK_URL)) bad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http(s)://');\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nif (!['open', 'closed'].includes(C.BUDGET_FAIL_MODE)) bad.push(\"CONFIG.BUDGET_FAIL_MODE must be 'open' or 'closed'\");\nconst num = (k) => Number(C[k]);\nfor (const k of ['CACHE_TTL_SECONDS', 'BREAKER_FAILURE_THRESHOLD', 'BREAKER_COOLDOWN_SECONDS', 'BREAKER_MAX_COOLDOWN_SECONDS', 'PROBE_CLAIM_TTL_SECONDS', 'MAX_PROMPT_CHARS', 'DEFAULT_MAX_TOKENS', 'MAX_ALLOWED_TOKENS', 'REQUEST_TIMEOUT_MS', 'ALERT_COOLDOWN_SECONDS']) if (!(num(k) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (!(num('DAILY_BUDGET_USD') >= 0)) bad.push('CONFIG.DAILY_BUDGET_USD must be a number >= 0');\nif (!(num('RETRIES_PER_TIER') >= 0 && Number.isInteger(num('RETRIES_PER_TIER')))) bad.push('CONFIG.RETRIES_PER_TIER must be an integer >= 0');\nif (!(num('RETRY_BACKOFF_MS') >= 0)) bad.push('CONFIG.RETRY_BACKOFF_MS must be a number >= 0 (0 = retry at once)');\nif (!(num('RETRY_BACKOFF_MAX_MS') >= num('RETRY_BACKOFF_MS'))) bad.push('CONFIG.RETRY_BACKOFF_MAX_MS must be a number >= RETRY_BACKOFF_MS');\nif (!(num('RETRY_JITTER_PERCENT') >= 0 && num('RETRY_JITTER_PERCENT') <= 100)) bad.push('CONFIG.RETRY_JITTER_PERCENT must be a number from 0 to 100');\nif (!(num('RETRY_MAX_TOTAL_WAIT_MS') >= 0)) bad.push('CONFIG.RETRY_MAX_TOTAL_WAIT_MS must be a number >= 0');\nif (typeof C.RETRY_HONOUR_RETRY_AFTER !== 'boolean') bad.push('CONFIG.RETRY_HONOUR_RETRY_AFTER must be true or false');\nif (!(num('MIN_RESPONSE_CHARS') >= 0)) bad.push('CONFIG.MIN_RESPONSE_CHARS must be a number >= 0');\nif (num('DEFAULT_MAX_TOKENS') > num('MAX_ALLOWED_TOKENS')) bad.push('CONFIG.DEFAULT_MAX_TOKENS must not exceed MAX_ALLOWED_TOKENS');\n\nconst TASKS = ['simple', 'code', 'complex'], KINDS = ['ollama', 'openai', 'anthropic'];\nlet tiers = [];\ntry {\n  const raw = JSON.parse(C.TIERS_JSON);\n  if (!Array.isArray(raw) || raw.length === 0) throw new Error('TIERS_JSON must be a non-empty JSON array');\n  const seen = new Set();\n  raw.forEach((t, i) => {\n    const w = `TIERS_JSON[${i}]`;\n    if (!isObj(t)) { bad.push(`${w} must be an object`); return; }\n    if (typeof t.name !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(t.name)) bad.push(`${w}.name must be 1-64 characters: letters, digits and . _ -`);\n    else if (seen.has(t.name)) bad.push(`${w}.name \"${t.name}\" is used twice`); else seen.add(t.name);\n    if (!KINDS.includes(t.kind)) bad.push(`${w}.kind must be one of ${KINDS.join(', ')}`);\n    if (!url(t.url)) bad.push(`${w}.url must be the full endpoint URL, starting with http(s)://`);\n    if (typeof t.model !== 'string' || !t.model) bad.push(`${w}.model must be a non-empty string`);\n    const handles = t.handles === undefined ? TASKS : t.handles;\n    if (!Array.isArray(handles) || !handles.length || handles.some((h) => !TASKS.includes(h))) bad.push(`${w}.handles must be a non-empty array of ${TASKS.join('|')}`);\n    const paid = t.paid === true;\n    const pin = t.price_in_per_mtok === undefined ? 0 : Number(t.price_in_per_mtok), pout = t.price_out_per_mtok === undefined ? 0 : Number(t.price_out_per_mtok);\n    if (!(pin >= 0) || !(pout >= 0)) bad.push(`${w} prices must be numbers >= 0 (USD per million tokens)`);\n    const timeout = t.timeout_ms === undefined ? 30000 : Number(t.timeout_ms);\n    if (!(timeout > 0 && timeout <= 600000)) bad.push(`${w}.timeout_ms must be a number between 1 and 600000`);\n    if (t.headers !== undefined && !isObj(t.headers)) bad.push(`${w}.headers must be an object`);\n    tiers.push({ name: t.name, kind: t.kind, url: t.url, model: t.model, handles, paid, price_in: pin, price_out: pout, timeout_ms: timeout,\n      api_key: typeof t.api_key === 'string' ? t.api_key : '', headers: isObj(t.headers) ? t.headers : {}, anthropic_version: t.anthropic_version || '2023-06-01' });\n  });\n} catch (e) { bad.push('CONFIG.TIERS_JSON is not valid: ' + e.message); }\n// ---- the Routing Policy node\n{\n  const PL = $('Routing Policy').first().json.policy;\n  const pb = (m) => bad.push('Policy: ' + m);\n  const names = tiers.map((t) => t.name);\n  const str = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;\n  const maxAllowed = Number(C.MAX_ALLOWED_TOKENS);\n  if (!PL._is_obj) pb('policy must be an object');\n  else {\n    for (const k of PL._raw_keys) if (!['classify', 'default_task_type', 'system', 'by_task_type'].includes(k)) pb(`${k} is not a known setting (classify, default_task_type, system, by_task_type)`);\n    if (!TASKS.includes(PL.default_task_type)) pb(`default_task_type must be one of ${TASKS.join(', ')}`);\n    if (!str(PL.system, 0, 2000)) pb('system must be text of at most 2000 characters');\n    if (!Array.isArray(PL.classify) || PL.classify.length > 20) pb('classify must be a list of at most 20 rules');\n    else PL.classify.forEach((r, i) => {\n      const w = `classify[${i}]`;\n      if (!isObj(r)) { pb(`${w} must be an object`); return; }\n      for (const k of Object.keys(r)) if (!['task_type', 'contains_any', 'min_chars', 'max_chars'].includes(k)) pb(`${w}.${k} is not a known setting (task_type, contains_any, min_chars, max_chars)`);\n      if (!TASKS.includes(r.task_type)) pb(`${w}.task_type must be one of ${TASKS.join(', ')}`);\n      if (r.contains_any !== undefined && !(Array.isArray(r.contains_any) && r.contains_any.length >= 1 && r.contains_any.length <= 50 && r.contains_any.every((x) => str(x, 1, 100)))) pb(`${w}.contains_any must be a list of 1 to 50 texts`);\n      if (r.min_chars !== undefined && !(Number.isInteger(r.min_chars) && r.min_chars >= 0)) pb(`${w}.min_chars must be a whole number >= 0`);\n      if (r.max_chars !== undefined && !(Number.isInteger(r.max_chars) && r.max_chars >= 1)) pb(`${w}.max_chars must be a whole number >= 1`);\n      if (r.contains_any === undefined && r.min_chars === undefined && r.max_chars === undefined) pb(`${w} needs at least one of contains_any, min_chars, max_chars`);\n      if (Number.isInteger(r.min_chars) && Number.isInteger(r.max_chars) && r.min_chars > r.max_chars) pb(`${w}.min_chars must not be above max_chars`);\n    });\n    if (!isObj(PL.by_task_type)) pb('by_task_type must be an object');\n    else for (const [tt, r] of Object.entries(PL.by_task_type)) {\n      const w = `by_task_type.${tt}`;\n      if (!TASKS.includes(tt)) { pb(`${w}: \"${tt}\" is not a task type (${TASKS.join(', ')})`); continue; }\n      if (!isObj(r)) { pb(`${w} must be an object`); continue; }\n      for (const k of Object.keys(r)) if (!['tiers', 'max_tokens', 'max_tokens_limit', 'system', 'require_json'].includes(k)) pb(`${w}.${k} is not a known setting (tiers, max_tokens, max_tokens_limit, system, require_json)`);\n      if (r.tiers !== undefined) {\n        if (!(Array.isArray(r.tiers) && r.tiers.length >= 1 && new Set(r.tiers).size === r.tiers.length && r.tiers.every((n) => names.includes(n)))) pb(`${w}.tiers must be a list of different tier names from TIERS_JSON (known tiers: ${names.join(', ')})`);\n        else if (!r.tiers.some((n) => tiers.find((t) => t.name === n).handles.includes(tt))) pb(`${w}.tiers: none of these tiers handles \"${tt}\" requests`);\n      }\n      for (const k of ['max_tokens', 'max_tokens_limit']) if (r[k] !== undefined && !(Number.isInteger(r[k]) && r[k] >= 1 && r[k] <= maxAllowed)) pb(`${w}.${k} must be a whole number from 1 to MAX_ALLOWED_TOKENS (${maxAllowed})`);\n      if (Number.isInteger(r.max_tokens) && Number.isInteger(r.max_tokens_limit) && r.max_tokens > r.max_tokens_limit) pb(`${w}.max_tokens must not be above max_tokens_limit`);\n      if (r.system !== undefined && !str(r.system, 1, 2000)) pb(`${w}.system must be 1 to 2000 characters`);\n      if (r.require_json !== undefined && r.require_json !== true) pb(`${w}.require_json may only be true (a policy can turn JSON on, never off)`);\n    }\n  }\n}\nif (bad.length) return reject(500, 'router_misconfigured', bad);\n\n// ---- request shape\nif (!isObj(req.body)) return reject(400, 'validation_failed', ['body must be a JSON object']);\nconst b = req.body, errors = [];\nif (typeof b.prompt !== 'string' || !b.prompt.trim()) errors.push('prompt is required and must be a non-empty string');\nelse if (b.prompt.length > num('MAX_PROMPT_CHARS')) errors.push(`prompt must be at most ${num('MAX_PROMPT_CHARS')} characters`);\nconst PL = $('Routing Policy').first().json.policy;\nlet task_type = b.task_type;\nif (task_type === undefined || task_type === null) {\n  task_type = PL.default_task_type;                                    // only when the caller sent none\n  const low = typeof b.prompt === 'string' ? b.prompt.toLowerCase() : '';\n  const hit = PL.classify.find((r) => (r.contains_any === undefined || r.contains_any.some((x) => low.includes(x.toLowerCase()))) && (r.min_chars === undefined || low.length >= r.min_chars) && (r.max_chars === undefined || low.length <= r.max_chars));\n  if (hit) task_type = hit.task_type;\n}\nif (!TASKS.includes(task_type)) errors.push(`task_type must be one of ${TASKS.join(', ')}`);\nconst rule = (Object.prototype.hasOwnProperty.call(PL.by_task_type, task_type) ? PL.by_task_type[task_type] : {}) || {};\nlet max_tokens = rule.max_tokens || num('DEFAULT_MAX_TOKENS');\nif (b.max_tokens !== undefined && b.max_tokens !== null) {\n  if (!Number.isInteger(b.max_tokens) || b.max_tokens < 1 || b.max_tokens > num('MAX_ALLOWED_TOKENS')) errors.push(`max_tokens must be an integer between 1 and ${num('MAX_ALLOWED_TOKENS')}`);\n  else if (rule.max_tokens_limit && b.max_tokens > rule.max_tokens_limit) errors.push(`max_tokens must be at most ${rule.max_tokens_limit} for ${task_type} requests`);\n  else max_tokens = b.max_tokens;\n}\nlet require_json = false;\nif (b.require_json !== undefined && b.require_json !== null) { if (typeof b.require_json !== 'boolean') errors.push('require_json must be true or false'); else require_json = b.require_json; }\nif (rule.require_json === true) require_json = true;\nif (errors.length) return reject(400, 'validation_failed', errors);\nconst system = [PL.system, rule.system].filter((x) => x).join('\\n\\n');\nconst used_tiers = rule.tiers ? rule.tiers.map((n) => tiers.find((t) => t.name === n)) : tiers;\n\nconst est_in_tokens = Math.ceil((b.prompt.length + system.length + (require_json ? 90 : 0)) / 4);\n// The cache key covers everything that changes the answer, including which models are configured.\nconst cache_material = JSON.stringify({ p: b.prompt, t: task_type, m: max_tokens, j: require_json, tiers: used_tiers.map((t) => `${t.name}|${t.kind}|${t.model}`), ...(system ? { s: system } : {}) });\nreturn [{ json: { ok: true, plan: { request: { prompt: b.prompt, task_type, max_tokens, require_json, system }, tiers: used_tiers, est_in_tokens, cache_material } } }];"
+      },
+      "id": "g-3",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "Checks auth, CONFIG (including every tier in TIERS_JSON) and the request, and fills in defaults. Anything wrong is answered here with a specific message."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-4",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-4",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "action": "generate",
+        "dataPropertyName": "request_id",
+        "encodingType": "uuid"
+      },
+      "id": "g-5",
+      "name": "Request Id",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        0
+      ],
+      "notes": "Request ids are a secure random UUID from the Crypto node. (A Code node cannot use `crypto` in current n8n.)"
+    },
+    {
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $('Validate Request').first().json.plan.cache_material }}",
+        "dataPropertyName": "cache_key",
+        "encoding": "hex"
+      },
+      "id": "g-6",
+      "name": "Cache Key",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        0
+      ],
+      "notes": "SHA-256 of prompt + task type + max_tokens + require_json + the configured models."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-7",
+              "leftValue": "={{ $('CONFIG').first().json.CACHE_ENABLED }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-7",
+      "name": "Cache Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.CACHE_API_URL.replace(/\\/+$/, '') + '/cache/' + $json.cache_key }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-8",
+      "name": "Cache Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "GET /cache/{key} -> 200 {body, cached_at} or 404. Any failure is treated as a miss: the cache can never fail a request.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst P = $('Validate Request').first().json.plan;\nconst id = $('Request Id').first().json.request_id;\nconst miss = { json: { cache_hit: false, state: { next_idx: 0, attempts: [] } } };\nif (!C.CACHE_ENABLED) return [miss];\nconst r = $input.first().json;\nconst entry = r.statusCode === 200 && r.body && typeof r.body === 'object' ? r.body : null;\nconst v = entry && entry.body && typeof entry.body === 'object' ? entry.body : null;\nif (!v || typeof v.text !== 'string') return [miss];\nconst age = Date.now() - Number(entry.cached_at);\nif (!Number.isFinite(age) || age < 0 || age >= C.CACHE_TTL_SECONDS * 1000) return [miss];      // the router enforces the TTL, the store need not\nif (v.text.trim().length < C.MIN_RESPONSE_CHARS) return [miss];\nlet parsed;\nif (P.request.require_json) { try { parsed = JSON.parse(v.text); } catch (e) { return [miss]; } }\nconst body = { request_id: id, text: v.text, task_type: P.request.task_type, provider: v.provider || 'cache', tier_index: v.tier_index === undefined ? null : v.tier_index, cached: true, cost_usd: 0 };\nif (P.request.require_json) body.json = parsed;\nreturn [{ json: { cache_hit: true, http_status: 200, response_body: body, notifications: [] } }];"
+      },
+      "id": "g-9",
+      "name": "Cache Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        0
+      ],
+      "notes": "A hit needs a well-formed entry younger than CACHE_TTL_SECONDS (checked here) that still satisfies the request (non-empty, valid JSON when required)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-10",
+              "leftValue": "={{ $json.cache_hit }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-10",
+      "name": "Cache Hit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const P = $('Validate Request').first().json.plan;\nconst inp = $input.first().json;\nconst st = inp.state || { next_idx: 0, attempts: [], waited_ms: 0 };\nconst attempts = [...st.attempts];\nlet idx = st.next_idx;\nwhile (idx < P.tiers.length && !P.tiers[idx].handles.includes(P.request.task_type)) {\n  attempts.push({ tier: P.tiers[idx].name, outcome: 'skipped', reason: 'task_type_not_handled' });\n  idx++;\n}\nconst out = { state: { next_idx: idx, attempts, waited_ms: st.waited_ms || 0 }, waits: [], has_tier: idx < P.tiers.length, tier_idx: idx, tier_attempt: 1, probe: false, reserved: false, warnings: [] };\nif (out.has_tier) {\n  const t = P.tiers[idx];\n  out.tier_name = t.name; out.paid = t.paid;\n  // Worst case this call could cost, reserved up front: prompt tokens estimate + the full max_tokens allowance.\n  out.reserve_amount = Math.ceil((P.est_in_tokens * t.price_in + P.request.max_tokens * t.price_out) / 1e6 * 1e8) / 1e8;\n}\nreturn [{ json: out }];"
+      },
+      "id": "g-11",
+      "name": "Plan Step",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        0
+      ],
+      "notes": "Entry of the loop. Picks the next tier (in TIERS_JSON order) that handles this task_type. Each pass through here is one tier; the loop ends at a success or when the tiers run out."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-12",
+              "leftValue": "={{ $json.has_tier }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-12",
+      "name": "Has Tier?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-13",
+              "leftValue": "={{ $('CONFIG').first().json.BREAKER_ENABLED }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-13",
+      "name": "Breaker Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.BREAKER_API_URL.replace(/\\/+$/, '') + '/breaker/' + encodeURIComponent($('Plan Step').last().json.tier_name) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-14",
+      "name": "Breaker Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3920,
+        0
+      ],
+      "notes": "GET /breaker/{tier} -> {status: closed|open, next_probe_at, trip_count}.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst S = $('Plan Step').last().json;\nconst proceed = (extra = {}) => [{ json: { ...S, ...extra, route: 'proceed' } }];\nif (!C.BREAKER_ENABLED) return proceed();\nconst r = $input.first().json;\nconst b = r.statusCode === 200 && r.body && typeof r.body === 'object' ? r.body : null;\nif (!b || !['closed', 'open'].includes(b.status)) return proceed({ warnings: ['breaker_unavailable_fail_open'] });   // a dead breaker service must not take the router down\nif (b.status === 'closed') return proceed();\nconst due = b.next_probe_at === null || b.next_probe_at === undefined || Date.now() >= Number(b.next_probe_at);\nif (due) return [{ json: { ...S, route: 'claim' } }];\nreturn [{ json: { ...S, route: 'skip', record: { tier: S.tier_name, outcome: 'skipped', reason: 'breaker_open' } } }];"
+      },
+      "id": "g-15",
+      "name": "Breaker Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        0
+      ],
+      "notes": "closed -> go. open and cooldown over -> try to claim the single probe. open and cooling -> skip this tier. Breaker service unreachable -> fail open (and say so in the trace)."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-16-0",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "proceed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "proceed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r-16-1",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "claim",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "claim"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "skip"
+        }
+      },
+      "id": "g-16",
+      "name": "Breaker Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        4480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.BREAKER_API_URL.replace(/\\/+$/, '') + '/breaker/' + encodeURIComponent($('Plan Step').last().json.tier_name) + '/claim-probe' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { ttl_seconds: $('CONFIG').first().json.PROBE_CLAIM_TTL_SECONDS } }}"
+      },
+      "id": "g-17",
+      "name": "Claim Probe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4760,
+        0
+      ],
+      "notes": "Atomic: only one request at a time wins the right to test a recovering provider.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const S = $('Breaker Verdict').last().json;\nconst r = $input.first().json;\nconst claimed = r.statusCode === 200 && r.body && r.body.claimed === true;\nif (claimed) return [{ json: { ...S, probe: true, route: 'proceed' } }];\nreturn [{ json: { ...S, route: 'skip', record: { tier: S.tier_name, outcome: 'skipped', reason: 'breaker_open' } } }];"
+      },
+      "id": "g-18",
+      "name": "Probe Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-19",
+              "leftValue": "={{ $json.route === 'proceed' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-19",
+      "name": "Probe Won?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-20",
+              "leftValue": "={{ $json.paid && $('CONFIG').first().json.BUDGET_ENABLED }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-20",
+      "name": "Budget Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.BUDGET_API_URL.replace(/\\/+$/, '') + '/budget/reserve' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { request_id: $('Request Id').first().json.request_id, tier: $json.tier_name, amount_usd: $json.reserve_amount, daily_limit_usd: $('CONFIG').first().json.DAILY_BUDGET_USD } }}"
+      },
+      "id": "g-21",
+      "name": "Reserve Budget",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5880,
+        0
+      ],
+      "notes": "Atomic check-and-reserve of this call's worst-case cost. This is what makes the daily limit hard under concurrency.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst S = $('Budget Needed?').last().json;\nconst r = $input.first().json;\nconst b = r.statusCode === 200 && r.body && typeof r.body === 'object' ? r.body : null;\nif (b && b.granted === true) return [{ json: { ...S, reserved: true, route: 'proceed' } }];\nif (b && b.granted === false) return [{ json: { ...S, route: 'skip', record: { tier: S.tier_name, outcome: 'skipped', reason: 'budget_denied' } } }];\n// The budget service itself failed. Default is to protect the money (closed); 'open' keeps serving but cannot enforce the limit.\nif (C.BUDGET_FAIL_MODE === 'open') return [{ json: { ...S, route: 'proceed', warnings: [...(S.warnings || []), 'budget_unavailable_fail_open'] } }];\nreturn [{ json: { ...S, route: 'skip', record: { tier: S.tier_name, outcome: 'skipped', reason: 'budget_unavailable' } } }];"
+      },
+      "id": "g-22",
+      "name": "Budget Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-23",
+              "leftValue": "={{ $json.route === 'proceed' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-23",
+      "name": "Budget OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const P = $('Validate Request').first().json.plan;\nconst S = $input.first().json;\nconst t = P.tiers[S.tier_idx], q = P.request;\nconst sys = [q.system, q.require_json ? 'Respond with a single valid JSON value and nothing else: no prose, no code fences.' : null].filter((x) => x).join('\\n\\n') || null;\nconst headers = { 'content-type': 'application/json' };\nlet body;\nif (t.kind === 'ollama') {\n  body = { model: t.model, prompt: q.prompt, stream: false, options: { num_predict: q.max_tokens } };\n  if (sys) body.system = sys;\n  if (t.api_key) headers.authorization = 'Bearer ' + t.api_key;\n} else if (t.kind === 'openai') {\n  body = { model: t.model, max_tokens: q.max_tokens, messages: [...(sys ? [{ role: 'system', content: sys }] : []), { role: 'user', content: q.prompt }] };\n  if (t.api_key) headers.authorization = 'Bearer ' + t.api_key;\n} else {\n  body = { model: t.model, max_tokens: q.max_tokens, messages: [{ role: 'user', content: q.prompt }] };\n  if (sys) body.system = sys;\n  headers['anthropic-version'] = t.anthropic_version;\n  if (t.api_key) headers['x-api-key'] = t.api_key;\n}\nObject.assign(headers, t.headers);\nreturn [{ json: { ...S, call: { url: t.url, headers, body, timeout_ms: t.timeout_ms }, started_ms: Date.now() } }];"
+      },
+      "id": "g-24",
+      "name": "Build Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        0
+      ],
+      "notes": "Builds the provider-specific request from the tier definition (ollama / openai / anthropic). Retries come back here too."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.call.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify($json.call.headers) }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.call.body }}",
+        "options": {
+          "timeout": "={{ $json.call.timeout_ms }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-25",
+      "name": "Call Provider",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7000,
+        0
+      ],
+      "notes": "One node for every tier: URL, headers, body and timeout all come from the tier definition. Errors and timeouts continue as data so Assess Call can classify them.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst P = $('Validate Request').first().json.plan;\nconst S = $('Build Call').last().json;\nconst t = P.tiers[S.tier_idx], q = P.request;\nconst r = $input.first().json;\nconst latency_ms = Date.now() - S.started_ms;\n\nlet status = 'hard_failure', reason = null, health = 'failure', retriable = false, text = null, parsed, usage = null, http_status = r.statusCode === undefined ? null : r.statusCode;\nconst hasStatus = typeof r.statusCode === 'number';\nif (!hasStatus) {                                                    // no HTTP answer at all: refused, DNS, timeout\n  const m = r.error && (r.error.message || r.error.description || r.error);\n  reason = 'network_error: ' + String(m || 'no response').slice(0, 200); retriable = true;\n} else if (r.statusCode >= 500 || r.statusCode === 429 || r.statusCode === 408) {\n  reason = 'http_' + r.statusCode; retriable = true;\n} else if ([401, 403, 404].includes(r.statusCode)) {\n  reason = 'http_' + r.statusCode + '_check_url_or_key';             // our configuration is wrong; retrying cannot help\n} else if (r.statusCode >= 400) {\n  status = 'rejected'; health = 'none'; reason = 'http_' + r.statusCode + '_request_rejected';   // the provider is up but refused this request: not its health problem\n} else {\n  const b = r.body;\n  let extracted = null, u = null;\n  if (b && typeof b === 'object') {\n    if (t.kind === 'ollama' && typeof b.response === 'string') { extracted = b.response; u = { i: b.prompt_eval_count, o: b.eval_count }; }\n    else if (t.kind === 'openai' && Array.isArray(b.choices) && b.choices.length) {\n      const c = b.choices[0] && b.choices[0].message && b.choices[0].message.content;\n      extracted = typeof c === 'string' ? c : ''; u = b.usage ? { i: b.usage.prompt_tokens, o: b.usage.completion_tokens } : null;\n    } else if (t.kind === 'anthropic' && Array.isArray(b.content)) {\n      extracted = b.content.filter((x) => x && x.type === 'text' && typeof x.text === 'string').map((x) => x.text).join(''); u = b.usage ? { i: b.usage.input_tokens, o: b.usage.output_tokens } : null;\n    }\n  }\n  if (extracted === null) { reason = 'unexpected_response_shape_for_' + t.kind; }       // 2xx but not the format this tier is configured as\n  else {\n    health = 'success';                                                 // the provider answered properly; what follows is about quality, not health\n    text = extracted.trim();\n    usage = u;\n    if (text.length < Math.max(1, C.MIN_RESPONSE_CHARS)) { status = 'soft_failure'; reason = 'empty_response'; }\n    else if (q.require_json) {\n      const stripped = text.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '').trim();\n      try { parsed = JSON.parse(stripped); text = stripped; status = 'accepted'; } catch (e) { status = 'soft_failure'; reason = 'invalid_json'; }\n    } else status = 'accepted';\n  }\n}\n// ---- cost: only calls that produced a response cost anything\nlet cost_usd = 0, tokens_in = 0, tokens_out = 0;\nif (text !== null) {\n  tokens_in = Number.isFinite(Number(usage && usage.i)) && usage.i !== undefined && usage.i !== null ? Number(usage.i) : P.est_in_tokens;\n  tokens_out = Number.isFinite(Number(usage && usage.o)) && usage.o !== undefined && usage.o !== null ? Number(usage.o) : Math.ceil(text.length / 4);\n  cost_usd = Math.round((tokens_in * t.price_in + tokens_out * t.price_out) / 1e6 * 1e8) / 1e8;\n}\n// ---- backoff before a retry: exponential, with jitter, honouring Retry-After, within a total wait budget for the whole request\nlet retry = retriable && S.tier_attempt <= Number(C.RETRIES_PER_TIER), delay = 0, retry_skipped = null;\nconst waited = (S.state && S.state.waited_ms) || 0;\nif (retry) {\n  const cap = Number(C.RETRY_BACKOFF_MAX_MS), jit = Number(C.RETRY_JITTER_PERCENT) / 100;\n  delay = Math.min(Number(C.RETRY_BACKOFF_MS) * Math.pow(2, S.tier_attempt - 1), cap);\n  delay = Math.round(Math.min(cap, Math.max(0, delay * (1 + (Math.random() * 2 - 1) * jit))));\n  const hdr = r.headers && r.headers['retry-after'];\n  if (C.RETRY_HONOUR_RETRY_AFTER && hdr !== undefined && [429, 503].includes(r.statusCode)) {\n    const h = String(hdr).trim();\n    let ms = null;\n    if (/^\\d+(\\.\\d+)?$/.test(h)) ms = Math.round(Number(h) * 1000);\n    else { const at = Date.parse(h); if (!Number.isNaN(at)) ms = Math.max(0, at - Date.now()); }\n    if (ms !== null) { if (ms > cap) { retry = false; retry_skipped = 'retry_after_exceeds_cap'; } else delay = Math.max(delay, ms); }\n  }\n  if (retry && waited + delay > Number(C.RETRY_MAX_TOTAL_WAIT_MS)) { retry = false; retry_skipped = 'retry_wait_budget_exhausted'; }\n  if (!retry) delay = 0;\n}\nconst waits = retry ? [...(S.waits || []), delay] : (S.waits || []);\nconst record = { tier: t.name, outcome: status, ...(reason ? { reason } : {}), ...(http_status !== null ? { http_status } : {}), attempts_made: S.tier_attempt, latency_ms, cost_usd, ...(waits.length ? { retry_waits_ms: waits } : {}), ...(retry_skipped ? { retry_skipped } : {}), ...(S.probe ? { probe: true } : {}), ...(S.warnings && S.warnings.length ? { notes: S.warnings } : {}) };\nconst out = { ...S, state: retry ? { ...S.state, waited_ms: waited + delay } : S.state, waits, retry_delay_ms: delay, tier_attempt: retry ? S.tier_attempt + 1 : S.tier_attempt, retry, health, health_error: reason, outcome: { status, text, parsed: parsed === undefined ? null : parsed, tokens_in, tokens_out, cost_usd }, record };\nreturn [{ json: out }];"
+      },
+      "id": "g-26",
+      "name": "Assess Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        0
+      ],
+      "notes": "Classifies the reply. 5xx/429/timeouts/network = hard failure (retried, counts against the breaker). 401/403/404 = hard, not retried. 400-type = provider rejected this request (no breaker penalty). 2xx but empty / invalid JSON = soft failure (escalate, no breaker penalty). Computes real cost from usage."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-27",
+              "leftValue": "={{ $json.retry }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-27",
+      "name": "Retry Same Tier?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const S = $input.first().json;\nconst ms = Number(S.retry_delay_ms) || 0;\nif (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));\nreturn [{ json: S }];"
+      },
+      "id": "g-28",
+      "name": "Retry Delay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7840,
+        0
+      ],
+      "notes": "Waits before the retry (the delay was worked out in Assess Call: exponential back-off with jitter, or the provider's Retry-After). The wait is not counted in the call's latency."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-29",
+              "leftValue": "={{ $json.health !== 'none' && $('CONFIG').first().json.BREAKER_ENABLED }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-29",
+      "name": "Health Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7840,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.BREAKER_API_URL.replace(/\\/+$/, '') + '/breaker/' + encodeURIComponent($json.tier_name) + '/record-' + $json.health }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.health === 'failure' ? { is_probe: $json.probe, error_message: String($json.health_error || 'failure').slice(0, 200), failure_threshold: $('CONFIG').first().json.BREAKER_FAILURE_THRESHOLD, cooldown_seconds: $('CONFIG').first().json.BREAKER_COOLDOWN_SECONDS, max_cooldown_seconds: $('CONFIG').first().json.BREAKER_MAX_COOLDOWN_SECONDS } : { is_probe: $json.probe } }}"
+      },
+      "id": "g-30",
+      "name": "Record Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8120,
+        0
+      ],
+      "notes": "Feeds the per-tier breaker: record-success or record-failure (with the probe flag). A failed probe re-opens the breaker with a longer cooldown.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-31",
+              "leftValue": "={{ $('Assess Call').last().json.reserved }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-31",
+      "name": "Settle Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.BUDGET_API_URL.replace(/\\/+$/, '') + '/budget/settle' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { request_id: $('Request Id').first().json.request_id, tier: $('Assess Call').last().json.tier_name, actual_usd: $('Assess Call').last().json.outcome.cost_usd } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-32",
+      "name": "Settle Budget",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8680,
+        0
+      ],
+      "notes": "Replaces the reservation with the actual cost (0 for a failed call). Retried up to 3 times: a lost settle makes the budget drift, so it is worth retrying. If it still fails the reply carries a warning and Slack is notified.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 500
+    },
+    {
+      "parameters": {
+        "jsCode": "const A = $('Assess Call').last().json;\nconst r = $input.first().json;\nlet settle_failed = false;\nif (A.reserved) settle_failed = !(typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300);\nreturn [{ json: { ...A, settle_failed } }];"
+      },
+      "id": "g-33",
+      "name": "Post Settle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-34",
+              "leftValue": "={{ $json.outcome.status === 'accepted' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-34",
+      "name": "Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        9240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const S = $input.first().json;\nreturn [{ json: { state: { next_idx: S.tier_idx + 1, attempts: [...S.state.attempts, S.record], waited_ms: S.state.waited_ms || 0 } } }];"
+      },
+      "id": "g-35",
+      "name": "Advance To Next Tier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9520,
+        0
+      ],
+      "notes": "Appends this tier's result to the trace and moves on. Reached after a skip (breaker open, budget denied) or a failed attempt."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst P = $('Validate Request').first().json.plan;\nconst id = $('Request Id').first().json.request_id;\nconst key = $('Cache Key').first().json.cache_key;\nconst A = $input.first().json;\nconst t = P.tiers[A.tier_idx];\nconst attempts = [...A.state.attempts, A.record];\nconst total_cost = Math.round(attempts.reduce((s, a) => s + (Number(a.cost_usd) || 0), 0) * 1e8) / 1e8;   // soft-failed paid tiers cost money too\nconst body = { request_id: id, text: A.outcome.text, task_type: P.request.task_type, provider: t.name, tier_index: A.tier_idx, cached: false, cost_usd: total_cost,\n  usage: { input_tokens: A.outcome.tokens_in, output_tokens: A.outcome.tokens_out } };\nif (P.request.require_json) body.json = A.outcome.parsed;\nconst notifications = [];\nconst warnings = [...(A.warnings || [])];\nif (A.settle_failed) { warnings.push('budget_settle_failed'); notifications.push({ key: 'budget_settle_failed', text: `Budget settle failed for request ${id} (tier ${t.name}, $${A.outcome.cost_usd}). The daily total may be off until the reservation is reconciled.` }); }\nif (warnings.length) body.warnings = warnings;\nif (C.INCLUDE_ATTEMPTS) body.attempts = attempts;\nconst cache_store = C.CACHE_ENABLED ? { key, body: { text: A.outcome.text, provider: t.name, tier_index: A.tier_idx }, cached_at: Date.now() } : null;\nreturn [{ json: { http_status: 200, response_body: body, cache_store, notifications } }];"
+      },
+      "id": "g-36",
+      "name": "Finalize Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9520,
+        150
+      ],
+      "notes": "Builds the 200 reply: text, provider, cost across all attempts, usage, the attempts trace. The cache write and any alert happen after the reply."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst id = $('Request Id').first().json.request_id;\nconst attempts = $input.first().json.state.attempts;\nconst reasons = attempts.map((a) => a.reason);\nconst tried = attempts.filter((a) => ['hard_failure', 'soft_failure', 'rejected'].includes(a.outcome));\nlet reason;\nif (reasons.includes('budget_denied')) reason = 'daily_budget_exhausted';\nelse if (tried.length && tried.every((a) => a.outcome === 'soft_failure')) reason = 'quality_check_failed_all_tiers';\nelse if (tried.length) reason = 'all_providers_failed';\nelse if (reasons.includes('budget_unavailable')) reason = 'budget_service_unavailable';\nelse if (reasons.includes('breaker_open')) reason = 'all_circuits_open';\nelse reason = 'no_eligible_tier';\nconst body = { error: 'all_providers_unavailable', reason, request_id: id };\nif (C.INCLUDE_ATTEMPTS) body.attempts = attempts;\nconst summary = attempts.map((a) => `${a.tier}:${a.reason || a.outcome}`).join(', ');\nreturn [{ json: { http_status: 503, response_body: body, cache_store: null, notifications: [{ key: 'failure:' + reason, text: `Request ${id} could not be served: ${reason} (${summary})` }] } }];"
+      },
+      "id": "g-37",
+      "name": "Build Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        150
+      ],
+      "notes": "Every tier failed or was skipped: 503 with a specific reason (daily_budget_exhausted, all_providers_failed, quality_check_failed_all_tiers, all_circuits_open, budget_service_unavailable, no_eligible_tier)."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-38",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        9800,
+        0
+      ],
+      "notes": "The single reply node. Every path builds {http_status, response_body} and ends here."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-39",
+              "leftValue": "={{ !!$json.cache_store }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-39",
+      "name": "Cache Store Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        10080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.CACHE_API_URL.replace(/\\/+$/, '') + '/cache/' + $json.cache_store.key }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { body: $json.cache_store.body, cached_at: $json.cache_store.cached_at } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-40",
+      "name": "Cache Store",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10360,
+        0
+      ],
+      "notes": "POST /cache/{key} {body, cached_at}. Runs after the reply and failures are ignored on purpose: a missed cache write costs a little efficiency, nothing else.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst list = $input.first().json.notifications || [];\nif (!C.SLACK_WEBHOOK_URL || !list.length) return [];\nconst sd = $getWorkflowStaticData('global');\nsd.alerts = sd.alerts || {};\nconst now = Date.now(), out = [];\nfor (const n of list) {\n  if (now - (sd.alerts[n.key] || 0) < C.ALERT_COOLDOWN_SECONDS * 1000) continue;      // same alert inside the cooldown: skip\n  if (out.some((o) => o.json.key === n.key)) continue;\n  out.push({ json: { key: n.key, text: '[LLM router] ' + n.text } });\n}\nreturn out;"
+      },
+      "id": "g-41",
+      "name": "Expand Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10080,
+        150
+      ],
+      "notes": "Runs AFTER the reply. Same alert key inside ALERT_COOLDOWN_SECONDS is dropped, so an outage does not flood Slack. (Throttle memory is kept by n8n with the active workflow and survives restarts.)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-42",
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10360,
+        150
+      ],
+      "notes": "Slack-compatible incoming webhook. Failure is ignored on purpose.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sent = $('Expand Notifications').all();\nconst sd = $getWorkflowStaticData('global');\nsd.alerts = sd.alerts || {};\nconst now = Date.now();\n$input.all().forEach((it, i) => {\n  const r = it.json;\n  if (typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300 && sent[i]) sd.alerts[sent[i].json.key] = now;   // start the cooldown only for alerts that were really delivered\n});\nfor (const k of Object.keys(sd.alerts)) if (now - sd.alerts[k] > 86400000) delete sd.alerts[k];\nreturn [];"
+      },
+      "id": "g-43",
+      "name": "Mark Alert Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Multi-Model LLM Router\n**Setup (about 10 minutes)**\n1. Run the three backing services (a reference implementation is included: `node 07-multi-model-llm-router-mock-server.js`, port 4500): cache, circuit breaker, budget. Each can be switched off in CONFIG.\n2. Open **CONFIG**: edit `TIERS_JSON` (your providers, cheapest first: kind `ollama`, `openai` or `anthropic`, full endpoint URL, model, prices, api_key), the service URLs, `DAILY_BUDGET_USD`, optional `SLACK_WEBHOOK_URL` and `ROUTER_AUTH_TOKEN`.\n3. Activate, then `POST /webhook/llm/complete` with `{\"prompt\": \"...\", \"task_type\": \"simple|code|complex\", \"max_tokens\": 512, \"require_json\": false}`.\n\n**Each request:** validate -> cache -> for each tier that handles the task: breaker gate -> reserve budget (paid tiers) -> call (retry) -> check quality -> record health -> settle cost -> accept or move on -> reply -> cache + alert.\n\nTiers are plain config: add, remove or reorder them without touching a node.",
+        "height": 360,
+        "width": 700,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -560
+      ]
+    }
+  ],
+  "connections": {
+    "LLM Request Webhook": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Routing Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Routing Policy": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Request Id",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Id": {
+      "main": [
+        [
+          {
+            "node": "Cache Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Key": {
+      "main": [
+        [
+          {
+            "node": "Cache Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Cache Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cache Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Lookup": {
+      "main": [
+        [
+          {
+            "node": "Cache Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Verdict": {
+      "main": [
+        [
+          {
+            "node": "Cache Hit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Hit?": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Plan Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Step": {
+      "main": [
+        [
+          {
+            "node": "Has Tier?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Tier?": {
+      "main": [
+        [
+          {
+            "node": "Breaker Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breaker Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Breaker Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Breaker Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breaker Status": {
+      "main": [
+        [
+          {
+            "node": "Breaker Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breaker Verdict": {
+      "main": [
+        [
+          {
+            "node": "Breaker Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breaker Route": {
+      "main": [
+        [
+          {
+            "node": "Budget Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Probe",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Advance To Next Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Probe": {
+      "main": [
+        [
+          {
+            "node": "Probe Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe Verdict": {
+      "main": [
+        [
+          {
+            "node": "Probe Won?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe Won?": {
+      "main": [
+        [
+          {
+            "node": "Budget Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Advance To Next Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Budget Needed?": {
+      "main": [
+        [
+          {
+            "node": "Reserve Budget",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve Budget": {
+      "main": [
+        [
+          {
+            "node": "Budget Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Budget Verdict": {
+      "main": [
+        [
+          {
+            "node": "Budget OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Budget OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Advance To Next Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Call": {
+      "main": [
+        [
+          {
+            "node": "Call Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Provider": {
+      "main": [
+        [
+          {
+            "node": "Assess Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assess Call": {
+      "main": [
+        [
+          {
+            "node": "Retry Same Tier?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Same Tier?": {
+      "main": [
+        [
+          {
+            "node": "Retry Delay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Health Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Delay": {
+      "main": [
+        [
+          {
+            "node": "Build Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Needed?": {
+      "main": [
+        [
+          {
+            "node": "Record Health",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Settle Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Health": {
+      "main": [
+        [
+          {
+            "node": "Settle Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settle Needed?": {
+      "main": [
+        [
+          {
+            "node": "Settle Budget",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Settle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settle Budget": {
+      "main": [
+        [
+          {
+            "node": "Post Settle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Settle": {
+      "main": [
+        [
+          {
+            "node": "Accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accepted?": {
+      "main": [
+        [
+          {
+            "node": "Finalize Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Advance To Next Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Advance To Next Tier": {
+      "main": [
+        [
+          {
+            "node": "Plan Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Success": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Failure": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond": {
+      "main": [
+        [
+          {
+            "node": "Cache Store Needed?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Store Needed?": {
+      "main": [
+        [
+          {
+            "node": "Cache Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Notifications": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Notification": {
+      "main": [
+        [
+          {
+            "node": "Mark Alert Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

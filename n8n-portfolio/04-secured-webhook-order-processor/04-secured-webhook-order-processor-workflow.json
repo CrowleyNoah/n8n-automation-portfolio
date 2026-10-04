@@ -1,0 +1,2881 @@
+{
+  "name": "Secured Webhook Order Processor",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "orders/incoming",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "g-0",
+      "name": "Webhook: Order",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "POST /webhook/orders/incoming, signed with HMAC-SHA256 over \"timestamp.rawBody\". rawBody is on so the signature is checked against the exact bytes the sender signed.",
+      "webhookId": "order-incoming"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "WEBHOOK_SIGNING_SECRET",
+              "value": "change-me-to-a-long-random-secret",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "SIGNATURE_SCHEME",
+              "value": "generic",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "SIGNATURE_HEADER",
+              "value": "x-signature",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "TIMESTAMP_HEADER",
+              "value": "x-timestamp",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "SIGNED_CONTENT",
+              "value": "timestamp.body",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "SIGNATURE_ENCODING",
+              "value": "hex",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "TIMESTAMP_TOLERANCE_SECONDS",
+              "value": 300,
+              "type": "number"
+            },
+            {
+              "id": "cfg-7",
+              "name": "EVENTS_STORE_API_URL",
+              "value": "http://localhost:4800",
+              "type": "string"
+            },
+            {
+              "id": "cfg-8",
+              "name": "INVENTORY_API_URL",
+              "value": "http://localhost:4800",
+              "type": "string"
+            },
+            {
+              "id": "cfg-9",
+              "name": "OMS_API_URL",
+              "value": "http://localhost:4800",
+              "type": "string"
+            },
+            {
+              "id": "cfg-10",
+              "name": "NOTIFY_API_URL",
+              "value": "http://localhost:4800",
+              "type": "string"
+            },
+            {
+              "id": "cfg-11",
+              "name": "SECURITY_LOG_API_URL",
+              "value": "http://localhost:4800",
+              "type": "string"
+            },
+            {
+              "id": "cfg-12",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-13",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-14",
+              "name": "RECLAIM_AFTER_SECONDS",
+              "value": 300,
+              "type": "number"
+            },
+            {
+              "id": "cfg-15",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-16",
+              "name": "FULFILMENT_TIMEOUT_MS",
+              "value": 15000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-17",
+              "name": "RECONCILE_ENABLED",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-18",
+              "name": "RECONCILE_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-19",
+              "name": "RECONCILE_ACTION",
+              "value": "alert",
+              "type": "string"
+            },
+            {
+              "id": "cfg-20",
+              "name": "RECONCILE_STALE_SECONDS",
+              "value": 900,
+              "type": "number"
+            },
+            {
+              "id": "cfg-21",
+              "name": "RECONCILE_MAX_PER_RUN",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "cfg-22",
+              "name": "REDRIVE_BASE_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-23",
+              "name": "RELEASE_RESERVATION_ON_OMS_FAILURE",
+              "value": "off",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-1",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. Signing secret, header names, service URLs. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "g-2",
+      "name": "Schedule: Reconcile",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        150
+      ],
+      "notes": "Runs the reconcile job every 15 minutes (edit the interval here). Does nothing unless CONFIG.RECONCILE_ENABLED is true."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "orders/reconcile",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-3",
+      "name": "Webhook: Reconcile",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "POST /webhook/orders/reconcile with header x-reconcile-token: runs the reconcile job now and replies with a summary. Off (403) unless CONFIG.RECONCILE_ENABLED is true.",
+      "webhookId": "order-reconcile"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "orders/redrive",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-4",
+      "name": "Webhook: Redrive",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        450
+      ],
+      "notes": "POST /webhook/orders/redrive {order_id} with header x-reconcile-token. Used by the reconcile job (one call per stuck order); also fine to call by hand. Same switch and token as the reconcile job.",
+      "webhookId": "order-redrive"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { _source: 'reconcile', _via: 'schedule' } }];"
+      },
+      "id": "g-5",
+      "name": "Mark Reconcile (schedule)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "Tags the run so it takes the reconcile path after CONFIG."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$input.first().json, _source: 'reconcile', _via: 'api' } }];"
+      },
+      "id": "g-6",
+      "name": "Mark Reconcile (api)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        150
+      ],
+      "notes": "Tags the run so it takes the reconcile path after CONFIG."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$input.first().json, _source: 'redrive', _via: 'api' } }];"
+      },
+      "id": "g-7",
+      "name": "Mark Redrive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        300
+      ],
+      "notes": "Tags the run so it takes the redrive path after CONFIG."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-8",
+              "leftValue": "={{ $json._source === 'reconcile' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-8",
+      "name": "Is Reconcile?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "Order requests, reconcile runs and redrive calls share one CONFIG node; this sends each down its own path."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-9",
+              "leftValue": "={{ $json._source === 'redrive' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-9",
+      "name": "Is Redrive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst rbad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nif (!['alert', 'redrive'].includes(C.RECONCILE_ACTION)) rbad.push('CONFIG.RECONCILE_ACTION must be \"alert\" or \"redrive\"');\nif (!(Number(C.RECONCILE_STALE_SECONDS) > 0)) rbad.push('CONFIG.RECONCILE_STALE_SECONDS must be a number > 0');\nelse if (Number(C.RECONCILE_STALE_SECONDS) < Number(C.RECLAIM_AFTER_SECONDS)) rbad.push('CONFIG.RECONCILE_STALE_SECONDS must not be smaller than RECLAIM_AFTER_SECONDS (a first delivery may still be running)');\nif (!(Number.isInteger(Number(C.RECONCILE_MAX_PER_RUN)) && Number(C.RECONCILE_MAX_PER_RUN) >= 1 && Number(C.RECONCILE_MAX_PER_RUN) <= 200)) rbad.push('CONFIG.RECONCILE_MAX_PER_RUN must be a whole number from 1 to 200');\nif (typeof C.RECONCILE_AUTH_TOKEN !== 'string' || C.RECONCILE_AUTH_TOKEN.length < 8) rbad.push('CONFIG.RECONCILE_AUTH_TOKEN must be set (at least 8 characters) when RECONCILE_ENABLED is true');\nif (C.RECONCILE_ACTION === 'redrive' && !/^https?:\\/\\//.test(C.REDRIVE_BASE_URL || '')) rbad.push(\"CONFIG.REDRIVE_BASE_URL must be this n8n instance's base URL (http:// or https://) when RECONCILE_ACTION is \\\"redrive\\\"\");\nif (!/^https?:\\/\\//.test(C.EVENTS_STORE_API_URL || '')) rbad.push('CONFIG.EVENTS_STORE_API_URL must start with http:// or https://');\nif (C.SLACK_WEBHOOK_URL && !/^https?:\\/\\//.test(C.SLACK_WEBHOOK_URL)) rbad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http:// or https://');\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { rbad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nconst inp = $input.first().json;\nconst via = inp._via;\nconst stop = (status, error, extra, alert) => [{ json: { run: false, via, http_status: status, response_body: { error, ...(extra || {}) }, alert: alert || null } }];\nif (C.RECONCILE_ENABLED !== true) return stop(403, 'reconcile_disabled');\nif (rbad.length) return stop(500, 'reconcile_misconfigured', { details: rbad }, via === 'schedule' ? '[Orders] ' + esc('The scheduled reconcile could not run: ' + rbad.join('; ')) : null);\nif (via === 'api' && (inp.headers || {})['x-reconcile-token'] !== C.RECONCILE_AUTH_TOKEN) return stop(401, 'unauthorized');\nreturn [{ json: { run: true, via } }];"
+      },
+      "id": "g-10",
+      "name": "Reconcile Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        150
+      ],
+      "notes": "Off by default. When on: CONFIG is checked (a scheduled run that cannot start alerts ops), and an API call needs the right x-reconcile-token."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-11",
+              "leftValue": "={{ $json.run }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-11",
+      "name": "Reconcile Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.EVENTS_STORE_API_URL.replace(/\\/+$/, '') + '/events?status=received&older_than_seconds=' + $('CONFIG').first().json.RECONCILE_STALE_SECONDS + '&limit=' + $('CONFIG').first().json.RECONCILE_MAX_PER_RUN }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-12",
+      "name": "List Stale Received",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        0
+      ],
+      "notes": "GET /events?status=received&older_than_seconds=N&limit=M (pending_manual: status&limit only) -> 200 {events:[record,...]}, oldest first. These were accepted but never finished.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.EVENTS_STORE_API_URL.replace(/\\/+$/, '') + '/events?status=pending_manual&limit=' + $('CONFIG').first().json.RECONCILE_MAX_PER_RUN }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-13",
+      "name": "List Pending Manual",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        0
+      ],
+      "notes": "Same list call without an age limit for pending_manual: orders that need a human. They are only reported, never re-run.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst parse = (r) => { const b = r.body && typeof r.body === 'object' ? r.body : null; return r.statusCode === 200 && b && Array.isArray(b.events) ? b.events : null; };\nconst recv = parse($('List Stale Received').first().json), pend = parse($input.first().json);\nconst errors = [];\nif (recv === null) errors.push('the event store could not list stuck \"received\" orders');\nif (pend === null) errors.push('the event store could not list \"pending_manual\" orders');\nconst now = Date.now(), minAge = Number(C.RECONCILE_STALE_SECONDS) * 1000, cap = Number(C.RECONCILE_MAX_PER_RUN);\nconst idOk = (e) => isObj(e) && typeof e.order_id === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(e.order_id);\n// do not trust the store's filtering: keep only what really is stuck for long enough\nconst stale = (recv || []).filter((e) => idOk(e) && e.status === 'received' && now - Date.parse(e.received_at) >= minAge).slice(0, cap);\nconst manual = (pend || []).filter((e) => idOk(e) && e.status === 'pending_manual').slice(0, cap).map((e) => ({ order_id: e.order_id, reason: typeof e.reason === 'string' ? e.reason.slice(0, 200) : null }));\nconst redrive = errors.length === 0 && C.RECONCILE_ACTION === 'redrive' ? stale.map((e) => e.order_id) : [];   // only \"received\" is ever re-run; pending_manual never\nreturn [{ json: { errors, stale_received: stale.map((e) => e.order_id), pending_manual: manual, action: C.RECONCILE_ACTION, redrive_ids: redrive } }];"
+      },
+      "id": "g-14",
+      "name": "Reconcile Triage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "Filters what the store returned (status and age are re-checked here), caps the batch, and decides what to re-run: only stuck \"received\" orders, and only when RECONCILE_ACTION is \"redrive\" and both lists could be read. pending_manual orders are never re-run."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-15",
+              "leftValue": "={{ $json.redrive_ids.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-15",
+      "name": "Any Redrive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $('Reconcile Triage').first().json.redrive_ids.map((id) => ({ json: { order_id: id } }));"
+      },
+      "id": "g-16",
+      "name": "Split Redrive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ],
+      "notes": "One item per stuck order."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.REDRIVE_BASE_URL.replace(/\\/+$/, '') + '/webhook/orders/redrive' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify({ 'x-reconcile-token': $('CONFIG').first().json.RECONCILE_AUTH_TOKEN }) }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $json.order_id } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-17",
+      "name": "Call Redrive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        0
+      ],
+      "notes": "Calls this workflow's own redrive webhook once per stuck order. Each order is then claimed atomically in the event store, acknowledged, and run through the normal fulfilment path in its own execution.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ids = $('Split Redrive').all().map((i) => i.json.order_id);\nconst res = $input.all().map((i) => i.json);\nconst out = { started: [], not_claimed: [], failed: [] };\nres.forEach((r, k) => {\n  const id = ids[k] || '?';\n  const b = r.body && typeof r.body === 'object' ? r.body : {};\n  if (r.statusCode === 200 && b.status === 'redriving') out.started.push(id);\n  else if (r.statusCode === 200 && b.status === 'not_claimed') out.not_claimed.push(id);\n  else out.failed.push({ order_id: id, detail: typeof r.statusCode === 'number' ? 'HTTP ' + r.statusCode : 'no response' });\n});\nreturn [{ json: out }];"
+      },
+      "id": "g-18",
+      "name": "Redrive Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ],
+      "notes": "Counts per order: started (claimed and acknowledged), not_claimed (finished or taken by someone else meanwhile), failed (the redrive call itself failed)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst C = $('CONFIG').first().json;\nconst plan = $('Reconcile Plan').first().json;\nif (!plan.run) return [{ json: { http_status: plan.http_status, response_body: plan.response_body, alert: plan.alert } }];\nconst T = $('Reconcile Triage').first().json;\nconst R = $('Redrive Results').isExecuted ? $('Redrive Results').first().json : null;\nconst lines = [];\nconst mins = Math.round(Number(C.RECONCILE_STALE_SECONDS) / 60 * 10) / 10;\nif (T.errors.length) lines.push('Reconcile problem: ' + T.errors.join('; ') + '. Nothing was re-run.');\nif (T.action === 'alert' && T.stale_received.length) lines.push(`${T.stale_received.length} order(s) were accepted but never finished (stuck in \"received\" for over ${mins} min): ${T.stale_received.join(', ')}. Re-drive them or process them by hand.`);\nif (R) {\n  lines.push(`Reconcile re-ran ${R.started.length} stuck order(s)${R.started.length ? ': ' + R.started.join(', ') : ''}.`);\n  if (R.not_claimed.length) lines.push(`Skipped (already finished or taken by someone else): ${R.not_claimed.join(', ')}.`);\n  if (R.failed.length) lines.push(`Could not start: ${R.failed.map((f) => f.order_id + ' (' + f.detail + ')').join(', ')}.`);\n}\nif (T.pending_manual.length) lines.push(`${T.pending_manual.length} order(s) are waiting for a person (pending_manual): ${T.pending_manual.map((m) => m.order_id + (m.reason ? ' [' + m.reason + ']' : '')).join(', ')}.`);\nconst body = { status: T.errors.length ? 'incomplete' : 'ok', action: T.action, stale_received: T.stale_received, pending_manual: T.pending_manual.map((m) => m.order_id), redriven: R ? R.started : [], skipped: R ? R.not_claimed : [], failed: R ? R.failed : [], problems: T.errors };\nreturn [{ json: { http_status: 200, response_body: body, alert: lines.length ? '[Orders] ' + esc(lines.join(' ')) : null } }];"
+      },
+      "id": "g-19",
+      "name": "Reconcile Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        0
+      ],
+      "notes": "The summary for the caller, and one Slack message when something needs attention: stuck orders (or what was re-run), orders waiting for a person, or a problem listing them. Nothing to report = no message."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-20",
+              "leftValue": "={{ !!$json.alert && !!$('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-20",
+      "name": "Has Reconcile Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $('Reconcile Report').first().json.alert } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-21",
+      "name": "Send Reconcile Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4200,
+        0
+      ],
+      "notes": "Slack-compatible incoming webhook. A failed alert is ignored on purpose.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Reconcile Report').first().json.response_body }}",
+        "options": {
+          "responseCode": "={{ $('Reconcile Report').first().json.http_status }}"
+        }
+      },
+      "id": "g-22",
+      "name": "Respond Reconcile",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4480,
+        0
+      ],
+      "notes": "Replies to the API caller with the summary. A scheduled run has no caller, so this node does nothing there.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst rbad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nif (!['alert', 'redrive'].includes(C.RECONCILE_ACTION)) rbad.push('CONFIG.RECONCILE_ACTION must be \"alert\" or \"redrive\"');\nif (!(Number(C.RECONCILE_STALE_SECONDS) > 0)) rbad.push('CONFIG.RECONCILE_STALE_SECONDS must be a number > 0');\nelse if (Number(C.RECONCILE_STALE_SECONDS) < Number(C.RECLAIM_AFTER_SECONDS)) rbad.push('CONFIG.RECONCILE_STALE_SECONDS must not be smaller than RECLAIM_AFTER_SECONDS (a first delivery may still be running)');\nif (!(Number.isInteger(Number(C.RECONCILE_MAX_PER_RUN)) && Number(C.RECONCILE_MAX_PER_RUN) >= 1 && Number(C.RECONCILE_MAX_PER_RUN) <= 200)) rbad.push('CONFIG.RECONCILE_MAX_PER_RUN must be a whole number from 1 to 200');\nif (typeof C.RECONCILE_AUTH_TOKEN !== 'string' || C.RECONCILE_AUTH_TOKEN.length < 8) rbad.push('CONFIG.RECONCILE_AUTH_TOKEN must be set (at least 8 characters) when RECONCILE_ENABLED is true');\nif (C.RECONCILE_ACTION === 'redrive' && !/^https?:\\/\\//.test(C.REDRIVE_BASE_URL || '')) rbad.push(\"CONFIG.REDRIVE_BASE_URL must be this n8n instance's base URL (http:// or https://) when RECONCILE_ACTION is \\\"redrive\\\"\");\nif (!/^https?:\\/\\//.test(C.EVENTS_STORE_API_URL || '')) rbad.push('CONFIG.EVENTS_STORE_API_URL must start with http:// or https://');\nif (C.SLACK_WEBHOOK_URL && !/^https?:\\/\\//.test(C.SLACK_WEBHOOK_URL)) rbad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http:// or https://');\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { rbad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nconst inp = $input.first().json;\nconst stop = (status, error, extra) => [{ json: { go: false, http_status: status, response_body: { error, ...(extra || {}) } } }];\nif (C.RECONCILE_ENABLED !== true) return stop(403, 'reconcile_disabled');\nif (rbad.length) return stop(500, 'reconcile_misconfigured', { details: rbad });\nif ((inp.headers || {})['x-reconcile-token'] !== C.RECONCILE_AUTH_TOKEN) return stop(401, 'unauthorized');\nconst b = inp.body;\nif (!isObj(b) || typeof b.order_id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(b.order_id)) return stop(400, 'validation_failed', { details: ['order_id is required (1-128 characters: letters, digits and . _ : -)'] });\nreturn [{ json: { ok: true, order_id: b.order_id } }];"
+      },
+      "id": "g-23",
+      "name": "Redrive Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        150
+      ],
+      "notes": "Same switch and token as the reconcile job. Only an order_id is accepted: the order itself always comes from the event store, never from the caller."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-24",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-24",
+      "name": "Redrive Request OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.EVENTS_STORE_API_URL.replace(/\\/+$/, '') + '/events/' + encodeURIComponent($('Redrive Check').first().json.order_id) + '/reclaim' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { stale_after_seconds: $('CONFIG').first().json.RECONCILE_STALE_SECONDS } }}"
+      },
+      "id": "g-25",
+      "name": "Reclaim For Redrive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        150
+      ],
+      "notes": "The same atomic claim a late sender retry uses: only an event that is STILL \"received\" and older than RECONCILE_STALE_SECONDS can be taken (200 claimed:true + the stored record), otherwise 409. This is what stops a double run.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const id = $('Redrive Check').first().json.order_id;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : {};\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst out = (go, status, body, extra = {}) => [{ json: { go, http_status: status, response_body: body, ...extra } }];\nif (r.statusCode === 200 && b.claimed === true) {\n  const o = b.record && b.record.order;\n  if (isObj(o) && o.order_id === id && Array.isArray(o.line_items)) return out(true, 200, { status: 'redriving', order_id: id }, { order: o, _redrive: true });\n  return out(false, 422, { error: 'stored_order_unusable', order_id: id });\n}\nif (r.statusCode === 409) return out(false, 200, { status: 'not_claimed', order_id: id, state: (b.record && b.record.status) || null });\nif (r.statusCode === 404) return out(false, 404, { error: 'unknown_order', order_id: id });\nreturn out(false, 503, { error: 'event_store_unavailable', order_id: id, retry: true });"
+      },
+      "id": "g-26",
+      "name": "Redrive Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        150
+      ],
+      "notes": "Claimed -> go. Not \"received\" any more, or not old enough -> not_claimed (nothing runs). A claimed record without a usable order -> 422 (it stays \"received\", so the next reconcile reports it again)."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-27",
+      "name": "Respond Redrive",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2520,
+        150
+      ],
+      "notes": "Replies at once; the order then runs through the normal fulfilment path with nobody waiting."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-28",
+              "leftValue": "={{ $json.go === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-28",
+      "name": "Redrive Go?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-29",
+              "leftValue": "={{ $json._redrive === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-29",
+      "name": "Is Redrive Item?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        150
+      ],
+      "notes": "Order Mapping is also run for a re-driven order, only to read your notices settings (customer templates and ops alerts). The sender payload is not available, so the mapping itself is not used."
+    },
+    {
+      "parameters": {
+        "jsCode": "const M = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\n// ---- notices (data): checked, then completed with the defaults the engine insists on\nconst STATUSES = ['fulfilled', 'backordered', 'pending_manual'];\nconst nb = [];\nconst N = M.notices;\nif (!isObj(N)) nb.push('notices must be an object');\nelse {\n  for (const k of ['customer_templates', 'ops_alerts']) {\n    if (!isObj(N[k])) { nb.push(`notices.${k} must be an object`); continue; }\n    for (const [st, v] of Object.entries(N[k])) {\n      if (!STATUSES.includes(st)) nb.push(`notices.${k}.${st}: status must be one of ${STATUSES.join(', ')}`);\n      else if (k === 'customer_templates' && !(typeof v === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(v))) nb.push(`notices.customer_templates.${st} must be a template name (letters, digits, _ . -)`);\n      else if (k === 'ops_alerts' && !(typeof v === 'string' && v.trim() !== '' && v.length <= 500)) nb.push(`notices.ops_alerts.${st} must be text of 1 to 500 characters`);\n    }\n  }\n}\nlet notices = null;\nif (!nb.length) {\n  notices = { customer_templates: { ...N.customer_templates }, ops_alerts: { ...N.ops_alerts } };\n  if (!notices.ops_alerts.pending_manual) notices.ops_alerts.pending_manual = 'Order {order_id} needs manual reconciliation: {reason}';   // an order needing a human ALWAYS reaches ops\n}\nconst o = M.order;\nconst fallback = { customer_templates: {}, ops_alerts: { pending_manual: 'Order {order_id} needs manual reconciliation: {reason}' } };\nreturn [{ json: { order: o, notices: notices || fallback, extra_alert: notices ? null : `Order ${o.order_id} was re-driven but the Order Mapping notices settings are invalid (${nb.join('; ').slice(0, 300)}); customer notices were skipped.` } }];"
+      },
+      "id": "g-30",
+      "name": "Redrive Notices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        150
+      ],
+      "notes": "Uses the same checked notices settings as a normal order. If they are broken now, the order still runs, customer notices are skipped and ops is told."
+    },
+    {
+      "parameters": {
+        "jsCode": "if ($('Redrive Go?').isExecuted) { const n = $input.first().json; return [{ json: { order: n.order, notices: n.notices, extra_alert: n.extra_alert, source: 'redrive' } }]; }\nconst v = $('Validate Order').first().json;\nreturn [{ json: { order: v.order, notices: v.notices, extra_alert: null, source: 'webhook' } }];"
+      },
+      "id": "g-31",
+      "name": "Order In Flight",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        0
+      ],
+      "notes": "The one place the fulfilment steps read the order and notices from, so a normal order and a re-driven one use exactly the same nodes."
+    },
+    {
+      "parameters": {
+        "jsCode": "const inp = $input.first().json;\nconst C = $('CONFIG').first().json;\nlet raw = '';\ntry { const buf = await this.helpers.getBinaryDataBuffer(0, 'data'); raw = buf.toString('utf8'); } catch (e) { raw = ''; }\nconst headers = inp.headers || {};\nconst hv = (name) => String(headers[String(name || '').toLowerCase()] || '').trim();\n// How each sender signs. \"generic\" is configurable (CONFIG); the others are fixed presets.\nconst SCHEMES = {\n  generic: { header: C.SIGNATURE_HEADER, ts_header: C.TIMESTAMP_HEADER, signs: C.SIGNED_CONTENT === 'body' ? 'body' : 'timestamp.body', encoding: C.SIGNATURE_ENCODING === 'base64' ? 'base64' : 'hex', parse: 'plain' },\n  stripe: { header: 'stripe-signature', signs: 'timestamp.body', encoding: 'hex', parse: 'stripe' },\n  github: { header: 'x-hub-signature-256', signs: 'body', encoding: 'hex', parse: 'sha256-prefix' },\n  shopify: { header: 'x-shopify-hmac-sha256', signs: 'body', encoding: 'base64', parse: 'plain' },\n};\nconst scheme = Object.prototype.hasOwnProperty.call(SCHEMES, C.SIGNATURE_SCHEME) ? C.SIGNATURE_SCHEME : 'generic';\nconst S = SCHEMES[scheme];\nconst headerValue = hv(S.header);\nconst norm = (v) => (S.encoding === 'hex' ? v.toLowerCase() : v);\nlet ts = S.ts_header ? hv(S.ts_header) : '';\nlet sigs = [];\nif (S.parse === 'stripe') {\n  for (const part of headerValue.split(',')) {\n    const i = part.indexOf('=');\n    if (i < 1) continue;\n    const k = part.slice(0, i).trim(), v = part.slice(i + 1).trim();\n    if (k === 't') ts = v; else if (k === 'v1' && v) sigs.push(norm(v));\n  }\n} else if (headerValue) {\n  let v = headerValue;\n  if (S.parse === 'sha256-prefix' && !/^sha256=/i.test(v)) v = '';\n  else if (S.encoding === 'hex') v = v.replace(/^sha256=/i, '');\n  if (v) sigs = [norm(v)];\n}\nconst needs_ts = S.signs === 'timestamp.body' || !!String(S.ts_header || '').trim();\nconst sign_base = S.signs === 'timestamp.body' ? `${ts}.${raw}` : raw;\nreturn [{ json: { raw, sign_base, ts, sigs, header_present: !!headerValue, needs_ts, encoding: S.encoding, scheme } }];"
+      },
+      "id": "g-32",
+      "name": "Prepare Verification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        300
+      ],
+      "notes": "Reads the exact raw bytes of the request body, finds the signature (and timestamp) the way your sender sends them (CONFIG.SIGNATURE_SCHEME: generic, stripe, github or shopify) and builds the exact string that was signed."
+    },
+    {
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "value": "={{ $json.sign_base }}",
+        "dataPropertyName": "sig_hmac",
+        "secret": "={{ $('CONFIG').first().json.WEBHOOK_SIGNING_SECRET || 'unset' }}",
+        "encoding": "={{ $json.encoding }}"
+      },
+      "id": "g-33",
+      "name": "Signature (HMAC)",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        300
+      ],
+      "notes": "Computes HMAC-SHA256 with your signing secret. (A Code node cannot use `crypto` in current n8n; the original did, which is why it returned nothing.)",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst bad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nif (typeof C.WEBHOOK_SIGNING_SECRET !== 'string' || C.WEBHOOK_SIGNING_SECRET.length < 8) bad.push('CONFIG.WEBHOOK_SIGNING_SECRET must be set (at least 8 characters; use a long random value)');\nif (!['off', 'rejected', 'any'].includes(C.RELEASE_RESERVATION_ON_OMS_FAILURE)) bad.push('CONFIG.RELEASE_RESERVATION_ON_OMS_FAILURE must be off, rejected or any');\nif (!['generic', 'stripe', 'github', 'shopify'].includes(C.SIGNATURE_SCHEME)) bad.push('CONFIG.SIGNATURE_SCHEME must be generic, stripe, github or shopify');\nif (!['timestamp.body', 'body'].includes(C.SIGNED_CONTENT)) bad.push('CONFIG.SIGNED_CONTENT must be \"timestamp.body\" or \"body\"');\nif (!['hex', 'base64'].includes(C.SIGNATURE_ENCODING)) bad.push('CONFIG.SIGNATURE_ENCODING must be \"hex\" or \"base64\"');\nif (C.SIGNATURE_SCHEME === 'generic') {\n  if (!/^[A-Za-z0-9-]{1,64}$/.test(C.SIGNATURE_HEADER || '')) bad.push('CONFIG.SIGNATURE_HEADER must be a header name (letters, digits, -)');\n  if (C.TIMESTAMP_HEADER ? !/^[A-Za-z0-9-]{1,64}$/.test(C.TIMESTAMP_HEADER) : C.SIGNED_CONTENT !== 'body') bad.push('CONFIG.TIMESTAMP_HEADER must be a header name (letters, digits, -); it can be blank only when SIGNED_CONTENT is \"body\"');\n}\nfor (const k of ['EVENTS_STORE_API_URL', 'INVENTORY_API_URL', 'OMS_API_URL']) if (!url(C[k])) bad.push(`CONFIG.${k} must start with http:// or https://`);\nfor (const k of ['NOTIFY_API_URL', 'SECURITY_LOG_API_URL', 'SLACK_WEBHOOK_URL']) if (C[k] && !url(C[k])) bad.push(`CONFIG.${k} must be blank or start with http:// or https://`);\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nfor (const k of ['TIMESTAMP_TOLERANCE_SECONDS', 'RECLAIM_AFTER_SECONDS', 'REQUEST_TIMEOUT_MS', 'FULFILMENT_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nconst P = $('Prepare Verification').first().json;\nconst computed = String($input.first().json.sig_hmac || '');\nconst stop = (status, error, extra = {}, security = null) => [{ json: { ok: false, http_status: status, response_body: { error, ...extra }, security } }];\nif (bad.length) return stop(500, 'webhook_misconfigured', { details: bad });\n\n// ---- signature + timestamp (scheme: generic, stripe, github or shopify). The reply never says WHICH check failed; the reason goes to the security log.\nconst deny = (reason) => stop(401, 'unauthorized', {}, { reason });\nif (!P.header_present) return deny('missing signature header');\nif (!P.sigs.length) return deny('signature header is not in the expected format');\nif (P.needs_ts) {\n  if (!P.ts) return deny('missing timestamp header');\n  if (!/^\\d{1,13}$/.test(P.ts)) return deny('timestamp is not an integer');\n  let tsn = Number(P.ts); if (tsn > 1e12) tsn = tsn / 1000;\n  if (Math.abs(Date.now() / 1000 - tsn) > Number(C.TIMESTAMP_TOLERANCE_SECONDS)) return deny(`timestamp outside the ${C.TIMESTAMP_TOLERANCE_SECONDS}s window (possible replay)`);\n}\nlet matched = false;\nfor (const sig of P.sigs) {                           // Stripe can send several v1 signatures while a secret is being rotated\n  if (!computed || computed.length !== sig.length) continue;\n  let diff = 0;                                       // constant-time compare: no early exit\n  for (let i = 0; i < computed.length; i++) diff |= computed.charCodeAt(i) ^ sig.charCodeAt(i);\n  if (diff === 0) matched = true;\n}\nif (!matched) return deny('signature mismatch');\n\n// ---- the (now trusted) payload\nlet b;\ntry { b = JSON.parse(P.raw); } catch (e) { return stop(400, 'malformed_payload', { reason: 'body is not valid JSON' }); }\nif (!isObj(b)) return stop(400, 'malformed_payload', { reason: 'body must be a JSON object' });\nreturn [{ json: { ok: true, body: b, raw: P.raw } }];"
+      },
+      "id": "g-34",
+      "name": "Check Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        300
+      ],
+      "notes": "The security gate. Checks CONFIG, then header presence, timestamp window (replay), and the signature (constant-time compare), then parses the JSON. A bad signature gets a generic 401; the specific reason goes only to the security log. Nothing from the payload is interpreted before this passes."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-35",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-35",
+      "name": "Request OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-36",
+      "name": "Respond Early",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        6440,
+        0
+      ],
+      "notes": "Replies to requests that stop early: 400, 401, 409, 500, 503, and duplicates (200)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// ORDER MAPPING: the node for sender-specific logic. Edit only between the EDIT lines.\n// The signature has ALREADY been verified when this runs. Whatever you write here, the next\n// node (Validate Order) checks the result before anything is recorded, reserved or created.\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\n// 1. mapOrder(body): turn the sender's JSON into the standard order.\n//    Return { order_id, amount, currency, line_items: [ {..., quantity?} ], customer_email? }\nconst mapOrder = (body) => ({\n  order_id: body.order_id,\n  amount: body.amount,\n  currency: body.currency,\n  line_items: body.line_items,\n  customer_email: body.customer_email,\n});\n\n// 2. rules: each receives the standard order. Return a sentence to REJECT it (HTTP 422), or nothing.\nconst rules = [\n  // (order) => (order.amount > 5000 ? 'orders over 5000 need manual approval' : null),\n];\n\n// 3. notices (plain data). Statuses: fulfilled, backordered, pending_manual.\n//    customer_templates: which template name the customer gets for a status (leave a status out = no message)\n//    ops_alerts: the Slack text for a status. Use {order_id} {status} {reason} {amount} {currency}.\n//    (pending_manual ALWAYS alerts ops: if you remove it, the default text is used.)\nconst notices = {\n  customer_templates: { fulfilled: 'order_confirmation', backordered: 'backorder_notice' },\n  ops_alerts: { pending_manual: 'Order {order_id} needs manual reconciliation: {reason}' },\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst inp = $input.first().json;\nlet mapped = null, map_error = null;\nconst rule_reasons = [];\ntry { mapped = mapOrder(inp.body); } catch (err) { map_error = String((err && err.message) || err).slice(0, 200); }\nif (!map_error && mapped !== null && typeof mapped === 'object' && !Array.isArray(mapped)) {\n  for (const r of rules) {\n    try { const why = r(mapped); if (why) rule_reasons.push(String(why).slice(0, 300)); }\n    catch (err) { rule_reasons.push('custom rule error: ' + String((err && err.message) || err).slice(0, 200)); }\n  }\n}\nreturn [{ json: { raw: inp.raw, mapped, map_error, rule_reasons, notices, _redrive: inp._redrive === true, order: inp.order } }];"
+      },
+      "id": "g-37",
+      "name": "Order Mapping",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        150
+      ],
+      "notes": "EDIT ME. Sender-specific logic goes here: mapOrder (read the sender's payload format), rules (reject orders), notices (customer templates and ops alert wording). Only edit between the EDIT lines. Validate Order checks the result.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst M = $input.first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst stop = (status, error, extra = {}) => [{ json: { ok: false, http_status: status, response_body: { error, ...extra }, security: null } }];\nif (M.error !== undefined) return stop(500, 'order_mapping_failed', { details: [String((M.error && (M.error.message || M.error)) || 'the Order Mapping node could not run').slice(0, 300)] });\n\n// ---- notices (data): checked, then completed with the defaults the engine insists on\nconst STATUSES = ['fulfilled', 'backordered', 'pending_manual'];\nconst nb = [];\nconst N = M.notices;\nif (!isObj(N)) nb.push('notices must be an object');\nelse {\n  for (const k of ['customer_templates', 'ops_alerts']) {\n    if (!isObj(N[k])) { nb.push(`notices.${k} must be an object`); continue; }\n    for (const [st, v] of Object.entries(N[k])) {\n      if (!STATUSES.includes(st)) nb.push(`notices.${k}.${st}: status must be one of ${STATUSES.join(', ')}`);\n      else if (k === 'customer_templates' && !(typeof v === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(v))) nb.push(`notices.customer_templates.${st} must be a template name (letters, digits, _ . -)`);\n      else if (k === 'ops_alerts' && !(typeof v === 'string' && v.trim() !== '' && v.length <= 500)) nb.push(`notices.ops_alerts.${st} must be text of 1 to 500 characters`);\n    }\n  }\n}\nlet notices = null;\nif (!nb.length) {\n  notices = { customer_templates: { ...N.customer_templates }, ops_alerts: { ...N.ops_alerts } };\n  if (!notices.ops_alerts.pending_manual) notices.ops_alerts.pending_manual = 'Order {order_id} needs manual reconciliation: {reason}';   // an order needing a human ALWAYS reaches ops\n}\n\nif (nb.length) return stop(500, 'order_playbook_invalid', { details: nb });\n// ---- the mapped order\nif (M.map_error) return stop(400, 'validation_failed', { details: ['the payload could not be read: ' + M.map_error] });\nconst b = M.mapped;\nif (!isObj(b)) return stop(400, 'validation_failed', { details: ['the order mapping did not return an object'] });\nconst errors = [];\nif (typeof b.order_id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(b.order_id)) errors.push('order_id must be 1-128 characters: letters, digits and . _ : -');\nif (typeof b.amount !== 'number' || !isFinite(b.amount) || b.amount < 0) errors.push('amount must be a number >= 0');\nif (typeof b.currency !== 'string' || !/^[A-Za-z]{3}$/.test(b.currency)) errors.push('currency must be a 3-letter code');\nif (!Array.isArray(b.line_items) || b.line_items.length < 1 || b.line_items.length > 200) errors.push('line_items must be an array of 1-200 items');\nelse b.line_items.forEach((l, i) => {\n  if (!isObj(l)) errors.push(`line_items[${i}] must be an object`);\n  else if (l.quantity !== undefined && (!Number.isInteger(l.quantity) || l.quantity < 1 || l.quantity > 100000)) errors.push(`line_items[${i}].quantity must be a whole number >= 1`);\n});\nif (b.customer_email !== undefined && b.customer_email !== null && (typeof b.customer_email !== 'string' || !/^[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+$/.test(b.customer_email.trim()))) errors.push('customer_email must be a valid email address');\nif (errors.length) return stop(400, 'validation_failed', { details: errors });\nconst order = { order_id: b.order_id, amount: b.amount, currency: b.currency.toUpperCase(), line_items: b.line_items, customer_email: b.customer_email ? b.customer_email.trim().toLowerCase() : null };\nif (M.rule_reasons.length) return stop(422, 'order_rejected', { details: M.rule_reasons });\nreturn [{ json: { ok: true, order, raw: M.raw, notices } }];"
+      },
+      "id": "g-38",
+      "name": "Validate Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        300
+      ],
+      "notes": "THE GUARD (do not edit). Checks what Order Mapping produced: the standard order must be valid (ids, amount, currency, items, email), the notices settings must be well formed, a rule rejection gives 422, and an order that needs a human always reaches ops. A broken Order Mapping node gives a clear 500 and nothing is recorded."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-39",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-39",
+      "name": "Order OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-40",
+              "leftValue": "={{ !!$json.security && !!$('CONFIG').first().json.SECURITY_LOG_API_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-40",
+      "name": "Log Security Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        150
+      ],
+      "notes": "Only failed signature checks are logged, and only if SECURITY_LOG_API_URL is set."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SECURITY_LOG_API_URL.replace(/\\/+$/, '') + '/security' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { type: 'webhook_verification_failed', reason: $json.security.reason, at: new Date().toISOString() } }}"
+      },
+      "id": "g-41",
+      "name": "Log Security Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7000,
+        0
+      ],
+      "notes": "POST {SECURITY_LOG_API_URL}/security {type, reason, at}. Failure is ignored. Note: unsigned traffic can fill this log; rate-limit upstream.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.raw }}",
+        "dataPropertyName": "payload_hash",
+        "encoding": "hex"
+      },
+      "id": "g-42",
+      "name": "Payload Hash",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        4200,
+        150
+      ],
+      "notes": "SHA-256 of the raw body. Stored with the event so the same order_id with a DIFFERENT payload can be told apart from a genuine duplicate."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.EVENTS_STORE_API_URL.replace(/\\/+$/, '') + '/events' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $('Validate Order').first().json.order.order_id, payload_hash: $json.payload_hash, order: $('Validate Order').first().json.order } }}"
+      },
+      "id": "g-43",
+      "name": "Record Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4480,
+        150
+      ],
+      "notes": "POST /events -> 201 {record} when new, 200 {existing:true, record} when that order_id already exists. ATOMIC create-or-return-existing: this is the idempotency check AND the durable log in one call, so two simultaneous deliveries cannot both pass. Not retried here (a lost reply would look like a duplicate); the sender retries on 503.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst o = $('Validate Order').first().json.order;\nconst hash = $('Payload Hash').first().json.payload_hash;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nconst stop = (status, body) => [{ json: { ok: false, http_status: status, response_body: body } }];\nif (!b || !b.record || (r.statusCode !== 200 && r.statusCode !== 201)) return stop(503, { error: 'event_store_unavailable', order_id: o.order_id, retry: true });\nif (r.statusCode === 201) return [{ json: { ok: true, reclaim: false } }];\nconst rec = b.record;\nif (rec.payload_hash !== hash) return stop(409, { error: 'order_conflict', order_id: o.order_id, reason: 'this order_id was already received with different contents' });\nconst age = (Date.now() - Date.parse(rec.received_at)) / 1000;\nif (rec.status === 'received' && age >= Number(C.RECLAIM_AFTER_SECONDS)) return [{ json: { ok: true, reclaim: true } }];\nreturn stop(200, { status: 'duplicate', order_id: o.order_id, state: rec.status });"
+      },
+      "id": "g-44",
+      "name": "Record Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4760,
+        0
+      ],
+      "notes": "New -> process. Same order_id, different contents -> 409. Same contents -> 200 duplicate (nothing reprocessed), unless the first delivery was accepted but never finished and is older than RECLAIM_AFTER_SECONDS, in which case it is taken over. Store down -> 503 so the sender retries."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-45",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-45",
+      "name": "Process This?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-46",
+              "leftValue": "={{ $json.reclaim }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-46",
+      "name": "Needs Reclaim?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.EVENTS_STORE_API_URL.replace(/\\/+$/, '') + '/events/' + encodeURIComponent($('Validate Order').first().json.order.order_id) + '/reclaim' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { stale_after_seconds: $('CONFIG').first().json.RECLAIM_AFTER_SECONDS } }}"
+      },
+      "id": "g-47",
+      "name": "Reclaim Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5600,
+        0
+      ],
+      "notes": "POST /events/{id}/reclaim {stale_after_seconds} -> 200 {claimed:true} only if the event is STILL \"received\" and older than the lease (atomic); else 409. Rescues an order whose first delivery was acked but whose processing died.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const o = $('Validate Order').first().json.order;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : {};\nif (r.statusCode === 200 && b.claimed === true) return [{ json: { ok: true } }];\nif (r.statusCode === 409) return [{ json: { ok: false, http_status: 200, response_body: { status: 'duplicate', order_id: o.order_id, state: (b.record && b.record.status) || 'received' } } }];\nreturn [{ json: { ok: false, http_status: 503, response_body: { error: 'event_store_unavailable', order_id: o.order_id, retry: true } } }];"
+      },
+      "id": "g-48",
+      "name": "Reclaim Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5880,
+        0
+      ],
+      "notes": "Claimed -> process it now. Someone else claimed it -> duplicate. Error -> 503."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-49",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-49",
+      "name": "Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'accepted', order_id: $('Validate Order').first().json.order.order_id } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "g-50",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        6440,
+        150
+      ],
+      "notes": "The fast ack. The event is already durably recorded, so everything after this node happens with no caller waiting."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.INVENTORY_API_URL.replace(/\\/+$/, '') + '/reserve' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.FULFILMENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $('Order In Flight').first().json.order.order_id, line_items: $('Order In Flight').first().json.order.line_items, idempotency_key: 'order:' + $('Order In Flight').first().json.order.order_id } }}"
+      },
+      "id": "g-51",
+      "name": "Reserve Inventory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7000,
+        150
+      ],
+      "notes": "POST /reserve {order_id, line_items, idempotency_key} -> 200 reserved; 409 = not enough stock (a business outcome); anything else = the inventory service is in trouble. One retry on transient failure.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-52",
+              "leftValue": "={{ $json.error !== undefined || typeof $json.statusCode !== 'number' || $json.statusCode >= 500 || $json.statusCode === 408 || $json.statusCode === 429 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-52",
+      "name": "Reserve Inventory Transient?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        0
+      ],
+      "notes": "Transient failure (no response, 5xx, 408, 429)? One more try. A definite answer (2xx, 4xx) is final."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.INVENTORY_API_URL.replace(/\\/+$/, '') + '/reserve' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.FULFILMENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $('Order In Flight').first().json.order.order_id, line_items: $('Order In Flight').first().json.order.line_items, idempotency_key: 'order:' + $('Order In Flight').first().json.order.order_id } }}"
+      },
+      "id": "g-53",
+      "name": "Reserve Inventory (retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7560,
+        0
+      ],
+      "notes": "The one retry.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst ok = typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300;\nif (ok) return [{ json: { reserved: true } }];\nif (r.statusCode === 409) return [{ json: { reserved: false, outcome: { status: 'backordered', reason: 'insufficient inventory' } } }];\nconst why = typeof r.statusCode === 'number' ? 'HTTP ' + r.statusCode : 'no response';\nreturn [{ json: { reserved: false, outcome: { status: 'pending_manual', reason: `inventory_unavailable (${why})` } } }];"
+      },
+      "id": "g-54",
+      "name": "Reserve Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7840,
+        0
+      ],
+      "notes": "2xx = reserved. 409 = out of stock -> backordered (normal business outcome). Anything else = the inventory service failed -> pending_manual and ops is paged. The original treated an inventory OUTAGE as \"out of stock\" and told the customer it was backordered."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-55",
+              "leftValue": "={{ $json.reserved }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-55",
+      "name": "Reserved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.OMS_API_URL.replace(/\\/+$/, '') + '/orders' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.FULFILMENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $('Order In Flight').first().json.order.order_id, amount: $('Order In Flight').first().json.order.amount, currency: $('Order In Flight').first().json.order.currency, line_items: $('Order In Flight').first().json.order.line_items, customer_email: $('Order In Flight').first().json.order.customer_email, idempotency_key: 'order:' + $('Order In Flight').first().json.order.order_id } }}"
+      },
+      "id": "g-56",
+      "name": "Create Order in OMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8400,
+        0
+      ],
+      "notes": "POST /orders {order_id, amount, currency, line_items, customer_email, idempotency_key} -> 2xx created. One retry on transient failure; the order system must de-duplicate on order_id / idempotency_key.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-57",
+              "leftValue": "={{ $json.error !== undefined || typeof $json.statusCode !== 'number' || $json.statusCode >= 500 || $json.statusCode === 408 || $json.statusCode === 429 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-57",
+      "name": "Create Order in OMS Transient?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8680,
+        0
+      ],
+      "notes": "Transient failure (no response, 5xx, 408, 429)? One more try. A definite answer (2xx, 4xx) is final."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.OMS_API_URL.replace(/\\/+$/, '') + '/orders' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.FULFILMENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $('Order In Flight').first().json.order.order_id, amount: $('Order In Flight').first().json.order.amount, currency: $('Order In Flight').first().json.order.currency, line_items: $('Order In Flight').first().json.order.line_items, customer_email: $('Order In Flight').first().json.order.customer_email, idempotency_key: 'order:' + $('Order In Flight').first().json.order.order_id } }}"
+      },
+      "id": "g-58",
+      "name": "Create Order in OMS (retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8960,
+        0
+      ],
+      "notes": "The one retry.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst r = $input.first().json;\nconst ok = typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300;\nif (ok) return [{ json: { outcome: { status: 'fulfilled', reason: null }, release: false } }];\nconst why = typeof r.statusCode === 'number' ? 'HTTP ' + r.statusCode : 'no response';\n// A DEFINITE rejection (4xx other than 408/429) means the order system did not create the order. Anything else (no answer, 5xx, 408, 429) may have created it.\nconst definite = typeof r.statusCode === 'number' && r.statusCode >= 400 && r.statusCode < 500 && r.statusCode !== 408 && r.statusCode !== 429;\nconst mode = C.RELEASE_RESERVATION_ON_OMS_FAILURE;\nconst release = mode === 'any' || (mode === 'rejected' && definite);\nreturn [{ json: { outcome: { status: 'pending_manual', reason: `oms_create_failed (${why}); ` + (release ? 'releasing the inventory reservation' : 'inventory is still reserved') }, release, why } }];"
+      },
+      "id": "g-59",
+      "name": "OMS Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9240,
+        0
+      ],
+      "notes": "2xx -> fulfilled. Otherwise pending_manual (after the retry): the order is not lost, it is flagged for a human with the reason. If CONFIG.RELEASE_RESERVATION_ON_OMS_FAILURE allows it (off / rejected = only after a definite 4xx rejection / any), the inventory reservation is released next."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-60",
+              "leftValue": "={{ $json.release === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-60",
+      "name": "Release Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        9520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.INVENTORY_API_URL.replace(/\\/+$/, '') + '/release' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.FULFILMENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $('Order In Flight').first().json.order.order_id, idempotency_key: 'release:' + $('Order In Flight').first().json.order.order_id, reason: 'oms_create_failed' } }}"
+      },
+      "id": "g-61",
+      "name": "Release Reservation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9800,
+        0
+      ],
+      "notes": "POST /release {order_id, idempotency_key, reason} -> 2xx released (404 = nothing was held, also fine). One retry on transient failure. Only called when the order system failed and CONFIG.RELEASE_RESERVATION_ON_OMS_FAILURE allows it.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-62",
+              "leftValue": "={{ $json.error !== undefined || typeof $json.statusCode !== 'number' || $json.statusCode >= 500 || $json.statusCode === 408 || $json.statusCode === 429 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-62",
+      "name": "Release Reservation Transient?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        10080,
+        0
+      ],
+      "notes": "Transient failure (no response, 5xx, 408, 429)? One more try. A definite answer (2xx, 4xx) is final."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.INVENTORY_API_URL.replace(/\\/+$/, '') + '/release' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.FULFILMENT_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { order_id: $('Order In Flight').first().json.order.order_id, idempotency_key: 'release:' + $('Order In Flight').first().json.order.order_id, reason: 'oms_create_failed' } }}"
+      },
+      "id": "g-63",
+      "name": "Release Reservation (retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10360,
+        0
+      ],
+      "notes": "The one retry.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $('OMS Verdict').first().json;\nconst r = $input.first().json;\nconst ok = typeof r.statusCode === 'number' && ((r.statusCode >= 200 && r.statusCode < 300) || r.statusCode === 404);\nconst why = typeof r.statusCode === 'number' ? 'HTTP ' + r.statusCode : 'no response';\nconst base = `oms_create_failed (${v.why})`;\nreturn [{ json: { outcome: { status: 'pending_manual', reason: ok ? base + '; inventory reservation released' : base + `; the inventory reservation could NOT be released (${why}) and is still held`, release: ok ? 'released' : 'failed' } } }];"
+      },
+      "id": "g-64",
+      "name": "Release Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10640,
+        0
+      ],
+      "notes": "The order stays pending_manual (a person still has to deal with the order); this only records whether the stock was given back. A failed release is alerted."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { outcome: $input.first().json.outcome } }];"
+      },
+      "id": "g-65",
+      "name": "Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10920,
+        0
+      ],
+      "notes": "Both paths (out of stock / inventory failed / fulfilled / OMS failed) meet here with one outcome."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.EVENTS_STORE_API_URL.replace(/\\/+$/, '') + '/events/' + encodeURIComponent($('Order In Flight').first().json.order.order_id) + '/status' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: $('Outcome').first().json.outcome.status, reason: $('Outcome').first().json.outcome.reason } }}"
+      },
+      "id": "g-66",
+      "name": "Update Event Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11200,
+        0
+      ],
+      "notes": "Writes the final status to the event store: the source of truth a support agent checks. One retry on transient failure; if it still fails ops is alerted.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-67",
+              "leftValue": "={{ $json.error !== undefined || typeof $json.statusCode !== 'number' || $json.statusCode >= 500 || $json.statusCode === 408 || $json.statusCode === 429 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-67",
+      "name": "Update Event Status Transient?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        11480,
+        0
+      ],
+      "notes": "Transient failure (no response, 5xx, 408, 429)? One more try. A definite answer (2xx, 4xx) is final."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.EVENTS_STORE_API_URL.replace(/\\/+$/, '') + '/events/' + encodeURIComponent($('Order In Flight').first().json.order.order_id) + '/status' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: $('Outcome').first().json.outcome.status, reason: $('Outcome').first().json.outcome.reason } }}"
+      },
+      "id": "g-68",
+      "name": "Update Event Status (retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11760,
+        0
+      ],
+      "notes": "The one retry.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst F = $('Order In Flight').first().json;\nconst o = F.order;\nconst N = F.notices;\nconst out = $('Outcome').first().json.outcome;\nconst r = $input.first().json;\nconst n = [];\nconst statusSaved = typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300;\nconst vals = { order_id: o.order_id, status: out.status, reason: out.reason || 'none', amount: o.amount, currency: o.currency };\nconst fill = (t) => t.replace(/\\{(order_id|status|reason|amount|currency)\\}/g, (m, k) => String(vals[k]));   // one pass\nconst tpl = N.customer_templates[out.status];\nif (tpl && o.customer_email) n.push({ kind: 'customer', to: o.customer_email, template: tpl, order_id: o.order_id });\nconst ops = N.ops_alerts[out.status];\nif (ops) n.push({ kind: 'slack', text: fill(ops) });\nif (F.extra_alert) n.push({ kind: 'slack', text: F.extra_alert });\nif (out.release === 'failed') n.push({ kind: 'slack', text: `Order ${o.order_id}: the inventory reservation could NOT be released after the order system failed. The stock stays held until someone releases it.` });\nif (!statusSaved) n.push({ kind: 'slack', text: `Order ${o.order_id}: final status \"${out.status}\" could not be written to the event store. The event may still show \"received\". Reason: ${out.reason || 'none'}` });\nreturn [{ json: { notifications: n } }];"
+      },
+      "id": "g-69",
+      "name": "Build Notices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        12040,
+        0
+      ],
+      "notes": "Builds the customer notices and ops alerts from the Order Mapping notices settings (default: confirmation on fulfilled, backorder notice on backordered, an ops alert on pending_manual). A failed status write is ALWAYS alerted. Built AFTER the status write."
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst C = $('CONFIG').first().json;\nconst out = [];\nfor (const n of $input.first().json.notifications || []) {\n  if (n.kind === 'slack' && C.SLACK_WEBHOOK_URL) out.push({ json: { kind: 'slack', text: '[Orders] ' + esc(n.text) } });\n  if (n.kind === 'customer' && C.NOTIFY_API_URL && n.to) out.push({ json: n });\n}\nreturn out;"
+      },
+      "id": "g-70",
+      "name": "Expand Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        12320,
+        0
+      ],
+      "notes": "One item per message. Slack or customer notices are skipped if their URLs are blank."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-71",
+              "leftValue": "={{ $json.kind === 'slack' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-71",
+      "name": "Is Slack Notice?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        12600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-72",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        12880,
+        0
+      ],
+      "notes": "Slack-compatible incoming webhook. A failed alert is ignored on purpose.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.NOTIFY_API_URL.replace(/\\/+$/, '') + '/send' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { to: $json.to, template: $json.template, order_id: $json.order_id } }}"
+      },
+      "id": "g-73",
+      "name": "Notify Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        12880,
+        150
+      ],
+      "notes": "POST {NOTIFY_API_URL}/send {to, template, order_id}. Best effort; a failure is ignored.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Secured Webhook Order Processor\n**Setup (about 10 minutes)**\n1. Run the backing services (a reference implementation is included: `node 04-secured-webhook-order-processor-mock-server.js`, port 4800): event store, inventory, order system, customer notifications, security log, Slack stand-in.\n2. Open **CONFIG**: **change `WEBHOOK_SIGNING_SECRET`** (the shared secret your sender signs with; the workflow refuses to run with a short one), check the header names, set the service URLs and optional `SLACK_WEBHOOK_URL`.\n3. Activate. Senders `POST /webhook/orders/incoming` with headers `x-timestamp` (unix seconds) and `x-signature` = hex HMAC-SHA256 of `timestamp.rawBody`. (Stripe, GitHub or Shopify sender? Set `SIGNATURE_SCHEME` in CONFIG instead.)\n\n**Each order:** verify signature + timestamp -> validate -> record it atomically (this is the duplicate check) -> reply 200 \"accepted\" -> reserve inventory -> create the order -> save the final status -> notify the customer / alert ops.",
+        "height": 380,
+        "width": 760,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -560
+      ]
+    }
+  ],
+  "connections": {
+    "Reserve Inventory": {
+      "main": [
+        [
+          {
+            "node": "Reserve Inventory Transient?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve Inventory Transient?": {
+      "main": [
+        [
+          {
+            "node": "Reserve Inventory (retry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reserve Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Order in OMS": {
+      "main": [
+        [
+          {
+            "node": "Create Order in OMS Transient?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Order in OMS Transient?": {
+      "main": [
+        [
+          {
+            "node": "Create Order in OMS (retry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "OMS Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Reservation": {
+      "main": [
+        [
+          {
+            "node": "Release Reservation Transient?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Reservation Transient?": {
+      "main": [
+        [
+          {
+            "node": "Release Reservation (retry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Release Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Event Status": {
+      "main": [
+        [
+          {
+            "node": "Update Event Status Transient?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Event Status Transient?": {
+      "main": [
+        [
+          {
+            "node": "Update Event Status (retry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Notices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Order": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule: Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Mark Reconcile (schedule)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Reconcile (schedule)": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Mark Reconcile (api)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Reconcile (api)": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Redrive": {
+      "main": [
+        [
+          {
+            "node": "Mark Redrive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Redrive": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Is Reconcile?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Reconcile?": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Redrive?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Redrive?": {
+      "main": [
+        [
+          {
+            "node": "Redrive Check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Plan": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Run?": {
+      "main": [
+        [
+          {
+            "node": "List Stale Received",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reconcile Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Stale Received": {
+      "main": [
+        [
+          {
+            "node": "List Pending Manual",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Pending Manual": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Triage": {
+      "main": [
+        [
+          {
+            "node": "Any Redrive?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Redrive?": {
+      "main": [
+        [
+          {
+            "node": "Split Redrive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reconcile Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Redrive": {
+      "main": [
+        [
+          {
+            "node": "Call Redrive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Redrive": {
+      "main": [
+        [
+          {
+            "node": "Redrive Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redrive Results": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Report": {
+      "main": [
+        [
+          {
+            "node": "Has Reconcile Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Reconcile Alert?": {
+      "main": [
+        [
+          {
+            "node": "Send Reconcile Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reconcile Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redrive Check": {
+      "main": [
+        [
+          {
+            "node": "Redrive Request OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redrive Request OK?": {
+      "main": [
+        [
+          {
+            "node": "Reclaim For Redrive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Redrive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reclaim For Redrive": {
+      "main": [
+        [
+          {
+            "node": "Redrive Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redrive Verdict": {
+      "main": [
+        [
+          {
+            "node": "Respond Redrive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Redrive": {
+      "main": [
+        [
+          {
+            "node": "Redrive Go?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redrive Go?": {
+      "main": [
+        [
+          {
+            "node": "Order Mapping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Redrive Item?": {
+      "main": [
+        [
+          {
+            "node": "Redrive Notices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redrive Notices": {
+      "main": [
+        [
+          {
+            "node": "Order In Flight",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Verification": {
+      "main": [
+        [
+          {
+            "node": "Signature (HMAC)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature (HMAC)": {
+      "main": [
+        [
+          {
+            "node": "Check Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request": {
+      "main": [
+        [
+          {
+            "node": "Request OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request OK?": {
+      "main": [
+        [
+          {
+            "node": "Order Mapping",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Mapping": {
+      "main": [
+        [
+          {
+            "node": "Is Redrive Item?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Order": {
+      "main": [
+        [
+          {
+            "node": "Order OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order OK?": {
+      "main": [
+        [
+          {
+            "node": "Payload Hash",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Early": {
+      "main": [
+        [
+          {
+            "node": "Log Security Event?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Security Event?": {
+      "main": [
+        [
+          {
+            "node": "Log Security Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload Hash": {
+      "main": [
+        [
+          {
+            "node": "Record Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Event": {
+      "main": [
+        [
+          {
+            "node": "Record Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Verdict": {
+      "main": [
+        [
+          {
+            "node": "Process This?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process This?": {
+      "main": [
+        [
+          {
+            "node": "Needs Reclaim?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Reclaim?": {
+      "main": [
+        [
+          {
+            "node": "Reclaim Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reclaim Event": {
+      "main": [
+        [
+          {
+            "node": "Reclaim Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reclaim Verdict": {
+      "main": [
+        [
+          {
+            "node": "Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Accepted": {
+      "main": [
+        [
+          {
+            "node": "Order In Flight",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order In Flight": {
+      "main": [
+        [
+          {
+            "node": "Reserve Inventory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve Inventory (retry)": {
+      "main": [
+        [
+          {
+            "node": "Reserve Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve Verdict": {
+      "main": [
+        [
+          {
+            "node": "Reserved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserved?": {
+      "main": [
+        [
+          {
+            "node": "Create Order in OMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Order in OMS (retry)": {
+      "main": [
+        [
+          {
+            "node": "OMS Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OMS Verdict": {
+      "main": [
+        [
+          {
+            "node": "Release Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Needed?": {
+      "main": [
+        [
+          {
+            "node": "Release Reservation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Reservation (retry)": {
+      "main": [
+        [
+          {
+            "node": "Release Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Verdict": {
+      "main": [
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome": {
+      "main": [
+        [
+          {
+            "node": "Update Event Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Event Status (retry)": {
+      "main": [
+        [
+          {
+            "node": "Build Notices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Notices": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Notifications": {
+      "main": [
+        [
+          {
+            "node": "Is Slack Notice?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Slack Notice?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

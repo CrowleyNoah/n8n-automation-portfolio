@@ -1,0 +1,2278 @@
+{
+  "name": "Human Approval Gate",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "approvals/request",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-0",
+      "name": "Webhook: Approval Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "POST {action_id, action_type, requested_by, summary, details?, amount?, timeout_minutes?}. Replies at once with \"pending\"; the wait for a human happens after the reply.",
+      "webhookId": "approval-request"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "approvals/respond",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "g-1",
+      "name": "Webhook: Approval Response",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        150
+      ],
+      "notes": "Slack interaction (button click) OR direct API call {action_id, decision, responder}. rawBody is on so the Slack signature can be verified against the exact bytes Slack signed.",
+      "webhookId": "approval-respond"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-0",
+              "name": "APPROVAL_STORE_API_URL",
+              "value": "http://localhost:4700",
+              "type": "string"
+            },
+            {
+              "id": "cfg-1",
+              "name": "ACTION_EXECUTOR_API_URL",
+              "value": "http://localhost:4700",
+              "type": "string"
+            },
+            {
+              "id": "cfg-2",
+              "name": "NOTIFY_API_URL",
+              "value": "http://localhost:4700",
+              "type": "string"
+            },
+            {
+              "id": "cfg-3",
+              "name": "SERVICE_HEADERS_JSON",
+              "value": "{}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-4",
+              "name": "SLACK_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-5",
+              "name": "SLACK_SIGNING_SECRET",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-6",
+              "name": "REQUEST_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-7",
+              "name": "APPROVER_API_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-8",
+              "name": "ALLOWED_APPROVERS",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-9",
+              "name": "SELF_APPROVAL_ALLOWED",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-10",
+              "name": "DEFAULT_TIMEOUT_MINUTES",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "cfg-11",
+              "name": "MIN_TIMEOUT_MINUTES",
+              "value": 1,
+              "type": "number"
+            },
+            {
+              "id": "cfg-12",
+              "name": "MAX_TIMEOUT_MINUTES",
+              "value": 1440,
+              "type": "number"
+            },
+            {
+              "id": "cfg-13",
+              "name": "RECONCILE_ENABLED",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-14",
+              "name": "RECONCILE_AUTH_TOKEN",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-15",
+              "name": "RECONCILE_EXPIRE",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-16",
+              "name": "RECONCILE_EXECUTE",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "cfg-17",
+              "name": "RECONCILE_STALE_SECONDS",
+              "value": 900,
+              "type": "number"
+            },
+            {
+              "id": "cfg-18",
+              "name": "RECONCILE_MAX_PER_RUN",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "cfg-19",
+              "name": "REQUEST_TIMEOUT_MS",
+              "value": 10000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-20",
+              "name": "EXECUTOR_TIMEOUT_MS",
+              "value": 30000,
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "g-2",
+      "name": "CONFIG",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "THE ONLY NODE YOU NEED TO EDIT. Service URLs, secrets, who may approve, timeout limits. See the Read Me First note and the README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// APPROVAL POLICY: the node for who-approves-what and wording. DATA ONLY (no logic).\n// Edit the values between the EDIT lines. Every request is checked against these rules, and\n// a mistake gives a clear 500 (approval_misconfigured, lines start \"Policy:\").\n// A policy can only make approvals STRICTER than CONFIG; it can never loosen it.\n// ============================================================================\n// ---- EDIT FROM HERE ---------------------------------------------------------\nconst policy = {\n  // Action types this workflow accepts. Blank list = any type.\n  allowed_action_types: [],\n\n  // Rules for any action type that has no entry below.\n  //   approvers:       who may decide this type (names or ids, any case). Blank = whoever CONFIG allows.\n  //                    (CONFIG.ALLOWED_APPROVERS still applies as well.)\n  //   timeout_minutes: default wait before auto-decline. null = CONFIG.DEFAULT_TIMEOUT_MINUTES.\n  //   self_approval:   false = the requester may NOT approve their own request of this type. null = follow CONFIG.\n  //   prompt_fields:   which keys of \"details\" appear in the Slack message. null = show all of them.\n  //   required_approvals: how many DIFFERENT people must approve before the action runs (1 to 10, default 1).\n  //                    One deny from an allowed approver ends it at once. Needs CONFIG.APPROVER_API_TOKEN or\n  //                    CONFIG.SLACK_SIGNING_SECRET when above 1. If it times out first, nothing runs.\n  //   escalate_after_minutes + escalate_to: if still pending after this long, tell these people (and ops in Slack).\n  //                    When approvers is set, they may also approve from that moment. null / [] = no escalation.\n  default: { approvers: [], timeout_minutes: null, self_approval: null, prompt_fields: null, required_approvals: 1, escalate_after_minutes: null, escalate_to: [] },\n\n  by_action_type: {\n    // refund: { approvers: ['alice', 'carol'], timeout_minutes: 30, self_approval: false, prompt_fields: ['order_id', 'reason'] },\n    // payout: { approvers: ['alice', 'carol', 'erin'], required_approvals: 2, timeout_minutes: 120, escalate_after_minutes: 30, escalate_to: ['dana'] },\n  },\n\n  // What requesters (and escalation contacts) are told. Use {action_type} {action_id} {responder} {requested_by}.\n  // (Alerts to ops are fixed on purpose and cannot be changed or switched off here.)\n  messages: {\n    requester_denied: 'Your request \"{action_type}\" ({action_id}) was denied by {responder}. Nothing was executed.',\n    requester_executed: 'Your request \"{action_type}\" ({action_id}) was approved by {responder} and executed.',\n    requester_timeout: 'Your request \"{action_type}\" ({action_id}) was not approved in time and has been auto-declined. Nothing was executed.',\n    escalation: 'Escalated to you: \"{action_type}\" ({action_id}) requested by {requested_by} is still waiting for a decision.',\n  },\n};\n// ---- STOP EDITING HERE ------------------------------------------------------\nconst pick = (o, k, d) => (o && o[k] !== undefined && o[k] !== null ? o[k] : d);\nconst norm = { allowed_action_types: pick(policy, 'allowed_action_types', []), default: pick(policy, 'default', {}), by_action_type: pick(policy, 'by_action_type', {}), messages: pick(policy, 'messages', {}) };\nconst it = $input.first();\nreturn [{ json: { ...it.json, policy: norm }, binary: it.binary }];   // the raw request bytes must travel on (Slack signature)"
+      },
+      "id": "g-3",
+      "name": "Approval Policy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "notes": "EDIT ME for who-approves-what and wording: which action types are accepted, per-type approvers, timeouts, self-approval ban and the details shown in Slack, plus the messages requesters get. Data only; checked on every request. It can only make approvals stricter than CONFIG."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-4",
+              "leftValue": "={{ String($json.webhookUrl || '').endsWith('/approvals/respond') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-4",
+      "name": "Is Response Flow?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ],
+      "notes": "Both webhooks share one CONFIG node; this sends each request down its own flow."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst bad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nfor (const k of ['APPROVAL_STORE_API_URL', 'ACTION_EXECUTOR_API_URL']) if (!url(C[k])) bad.push(`CONFIG.${k} must start with http:// or https://`);\nfor (const k of ['NOTIFY_API_URL', 'SLACK_WEBHOOK_URL']) if (C[k] && !url(C[k])) bad.push(`CONFIG.${k} must be blank or start with http:// or https://`);\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nfor (const k of ['DEFAULT_TIMEOUT_MINUTES', 'MIN_TIMEOUT_MINUTES', 'MAX_TIMEOUT_MINUTES', 'REQUEST_TIMEOUT_MS', 'EXECUTOR_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (Number(C.MIN_TIMEOUT_MINUTES) > Number(C.MAX_TIMEOUT_MINUTES)) bad.push('CONFIG.MIN_TIMEOUT_MINUTES must not be larger than MAX_TIMEOUT_MINUTES');\nif (Number(C.DEFAULT_TIMEOUT_MINUTES) < Number(C.MIN_TIMEOUT_MINUTES) || Number(C.DEFAULT_TIMEOUT_MINUTES) > Number(C.MAX_TIMEOUT_MINUTES)) bad.push('CONFIG.DEFAULT_TIMEOUT_MINUTES must be between MIN_ and MAX_TIMEOUT_MINUTES');\nconst PL = $('Approval Policy').first().json.policy;\nconst plBad = (m) => bad.push('Policy: ' + m);\nconst hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);\nif (!isObj(PL)) plBad('the Approval Policy node did not return a \"policy\" object');\nelse {\n  const names = (v, max, len) => Array.isArray(v) && v.length <= max && v.every((x) => typeof x === 'string' && x.trim() !== '' && x.length <= len) && new Set(v).size === v.length;\n  if (!names(PL.allowed_action_types, 100, 100)) plBad('allowed_action_types must be a list of at most 100 different names (blank list = any type)');\n  const checkRule = (r, w) => {\n    if (!isObj(r)) { plBad(`${w} must be an object`); return; }\n    for (const k of Object.keys(r)) if (!['approvers', 'timeout_minutes', 'self_approval', 'prompt_fields', 'required_approvals', 'escalate_after_minutes', 'escalate_to'].includes(k)) plBad(`${w}.${k} is not a known setting (approvers, timeout_minutes, self_approval, prompt_fields, required_approvals, escalate_after_minutes, escalate_to)`);\n    if (r.approvers !== undefined && !names(r.approvers, 50, 200)) plBad(`${w}.approvers must be a list of at most 50 different names`);\n    if (r.timeout_minutes !== undefined && r.timeout_minutes !== null && !(typeof r.timeout_minutes === 'number' && r.timeout_minutes >= Number(C.MIN_TIMEOUT_MINUTES) && r.timeout_minutes <= Number(C.MAX_TIMEOUT_MINUTES))) plBad(`${w}.timeout_minutes must be null or a number between ${C.MIN_TIMEOUT_MINUTES} and ${C.MAX_TIMEOUT_MINUTES}`);\n    if (r.self_approval !== undefined && r.self_approval !== null && r.self_approval !== false) plBad(`${w}.self_approval may only be false (forbid) or null (follow CONFIG.SELF_APPROVAL_ALLOWED); a policy cannot loosen it`);\n    if (r.prompt_fields !== undefined && r.prompt_fields !== null && !names(r.prompt_fields, 20, 64)) plBad(`${w}.prompt_fields must be null (show all details) or a list of at most 20 detail names`);\n    if (r.required_approvals !== undefined && !(Number.isInteger(r.required_approvals) && r.required_approvals >= 1 && r.required_approvals <= 10)) plBad(`${w}.required_approvals must be a whole number from 1 to 10`);\n    if (typeof r.required_approvals === 'number' && r.required_approvals > 1 && !C.APPROVER_API_TOKEN && !C.SLACK_SIGNING_SECRET) plBad(`${w}.required_approvals above 1 needs CONFIG.APPROVER_API_TOKEN or CONFIG.SLACK_SIGNING_SECRET (on an open approve endpoint anyone could invent several approver names)`);\n    if (r.escalate_after_minutes !== undefined && r.escalate_after_minutes !== null && !(typeof r.escalate_after_minutes === 'number' && r.escalate_after_minutes >= Number(C.MIN_TIMEOUT_MINUTES) && r.escalate_after_minutes <= Number(C.MAX_TIMEOUT_MINUTES))) plBad(`${w}.escalate_after_minutes must be null or a number between ${C.MIN_TIMEOUT_MINUTES} and ${C.MAX_TIMEOUT_MINUTES}`);\n    if (r.escalate_to !== undefined && !names(r.escalate_to, 20, 200)) plBad(`${w}.escalate_to must be a list of at most 20 different names`);\n    const hasEsc = typeof r.escalate_after_minutes === 'number', hasTo = Array.isArray(r.escalate_to) && r.escalate_to.length > 0;\n    if (hasEsc !== hasTo) plBad(`${w}: escalate_after_minutes and escalate_to must be set together`);\n    if (Array.isArray(r.approvers) && r.approvers.length && Number.isInteger(r.required_approvals)) {\n      const pool = new Set(r.approvers.concat(hasTo ? r.escalate_to : []).map((x) => String(x).toLowerCase()));\n      if (r.required_approvals > pool.size) plBad(`${w}.required_approvals (${r.required_approvals}) is more than the people who can approve (${pool.size})`);\n    }\n  };\n  checkRule(PL.default, 'default');\n  if (!isObj(PL.by_action_type)) plBad('by_action_type must be an object');\n  else for (const [t, r] of Object.entries(PL.by_action_type)) {\n    if (!t.trim() || t.length > 100) plBad('by_action_type has an invalid action type name');\n    else if (Array.isArray(PL.allowed_action_types) && PL.allowed_action_types.length && !PL.allowed_action_types.includes(t)) plBad(`by_action_type.${t}: \"${t}\" is not in allowed_action_types`);\n    checkRule(r, `by_action_type.${t}`);\n  }\n  if (!isObj(PL.messages)) plBad('messages must be an object');\n  else for (const [k, v] of Object.entries(PL.messages)) {\n    if (!['requester_denied', 'requester_executed', 'requester_timeout', 'escalation'].includes(k)) plBad(`messages.${k} is not a known message (requester_denied, requester_executed, requester_timeout, escalation)`);\n    else if (typeof v !== 'string' || !v.trim() || v.length > 500) plBad(`messages.${k} must be text of 1 to 500 characters`);\n  }\n}\nconst inp = $input.first().json;\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: [] } }];\nif (C.REQUEST_AUTH_TOKEN && (inp.headers || {})['x-request-token'] !== C.REQUEST_AUTH_TOKEN) return reject(401, 'unauthorized');\nif (bad.length) return reject(500, 'approval_misconfigured', bad);\nconst b = inp.body;\nif (!isObj(b)) return reject(400, 'validation_failed', ['body must be a JSON object']);\nconst errors = [];\nconst str = (k, min, max) => { if (typeof b[k] !== 'string' || b[k].trim().length < min || b[k].length > max) errors.push(`${k} must be a string of ${min}-${max} characters`); };\nif (typeof b.action_id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(b.action_id)) errors.push('action_id must be 1-128 characters: letters, digits and . _ : -');\nstr('action_type', 1, 100); str('requested_by', 1, 200); str('summary', 1, 1000);\nif (b.details !== undefined && b.details !== null && !isObj(b.details)) errors.push('details must be a JSON object');\nif (b.details && JSON.stringify(b.details).length > 20000) errors.push('details is too large (max 20000 characters of JSON)');\nlet amount = null;\nif (b.amount !== undefined && b.amount !== null) { if (typeof b.amount !== 'number' || !isFinite(b.amount) || b.amount < 0) errors.push('amount must be a number >= 0'); else amount = b.amount; }\nconst typeName = typeof b.action_type === 'string' ? b.action_type.trim() : '';\nif (PL.allowed_action_types.length && typeName && !PL.allowed_action_types.includes(typeName)) errors.push(`action_type \"${typeName}\" is not accepted (allowed: ${PL.allowed_action_types.join(', ')})`);\nconst rule = hasOwn(PL.by_action_type, typeName) ? PL.by_action_type[typeName] : PL.default;\nlet minutes = (rule.timeout_minutes !== undefined && rule.timeout_minutes !== null) ? Number(rule.timeout_minutes) : Number(C.DEFAULT_TIMEOUT_MINUTES);\nif (b.timeout_minutes !== undefined && b.timeout_minutes !== null) {\n  if (typeof b.timeout_minutes !== 'number' || !isFinite(b.timeout_minutes) || b.timeout_minutes < Number(C.MIN_TIMEOUT_MINUTES) || b.timeout_minutes > Number(C.MAX_TIMEOUT_MINUTES)) errors.push(`timeout_minutes must be a number between ${C.MIN_TIMEOUT_MINUTES} and ${C.MAX_TIMEOUT_MINUTES}`);\n  else minutes = b.timeout_minutes;\n}\nif (errors.length) return reject(400, 'validation_failed', errors);\nconst needN = Math.max(1, Number(rule.required_approvals) || 1);\nconst escTo = Array.isArray(rule.escalate_to) ? rule.escalate_to : [];\nconst escAfter = Number(rule.escalate_after_minutes) > 0 && escTo.length && Number(rule.escalate_after_minutes) < minutes ? Number(rule.escalate_after_minutes) : null;   // a request whose own timeout is shorter than the escalation time is never escalated\nreturn [{ json: { ok: true, req: { action_id: b.action_id, action_type: b.action_type.trim(), requested_by: b.requested_by.trim(), summary: b.summary.trim(), details: b.details || {}, amount, timeout_minutes: minutes, required_approvals: needN, escalate_after_minutes: escAfter, escalate_to: escAfter ? escTo : [] } } }];"
+      },
+      "id": "g-5",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "notes": "Checks the caller (optional token), CONFIG and the request. Bad input is rejected with 400 and a specific message; nothing is silently changed (the original quietly turned an invalid timeout into 60 minutes)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-6",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-6",
+      "name": "Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.APPROVAL_STORE_API_URL.replace(/\\/+$/, '') + '/approvals' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { ...$('Validate Request').first().json.req } }}"
+      },
+      "id": "g-7",
+      "name": "Create Approval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "POST /approvals -> 201 {record} when new, 200 {existing:true, record} when that action_id already exists. ATOMIC create-or-return-existing, so a double submit never produces two prompts or two waits.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const q = $('Validate Request').first().json.req;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nconst stop = (status, body, notes = []) => [{ json: { ok: false, http_status: status, response_body: body, notifications: notes } }];\nif (!b || !b.record || (r.statusCode !== 200 && r.statusCode !== 201)) {\n  return stop(503, { error: 'approval_store_unavailable', action_id: q.action_id, retry: true }, [{ kind: 'slack', text: `Approval request ${q.action_id} (${q.action_type}) was NOT created: the approval store could not be reached. Nothing was sent to approvers.` }]);\n}\nif (r.statusCode === 200 || b.existing) return stop(200, { status: 'already_requested', action_id: q.action_id, state: b.record.status, expires_at: b.record.expires_at });\nreturn [{ json: { ok: true, record: b.record } }];"
+      },
+      "id": "g-8",
+      "name": "Create Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        0
+      ],
+      "notes": "New -> carry on. Duplicate -> reply already_requested and stop. Store down -> 503 (and an ops alert), never \"pending\" for a request that does not exist."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-9",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-9",
+      "name": "Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst C = $('CONFIG').first().json;\nconst q = $('Validate Request').first().json.req;\nconst rec = $('Create Verdict').first().json.record;\nconst expires = rec.expires_at;\nconst amount = (q.amount === null ? '' : `\\n*Amount:* ${esc(q.amount)}`) + (q.required_approvals > 1 ? `\\n*Approvals needed:* ${q.required_approvals} different approvers` : '');\nconst pl = $('Approval Policy').first().json.policy;\nconst rule = Object.prototype.hasOwnProperty.call(pl.by_action_type, q.action_type) ? pl.by_action_type[q.action_type] : pl.default;\nconst shown = Array.isArray(rule.prompt_fields) ? Object.fromEntries(rule.prompt_fields.filter((k) => k in q.details).map((k) => [k, q.details[k]])) : q.details;\nconst det = Object.keys(shown).length ? `\\n*Details:*\\n\\`\\`\\`${esc(JSON.stringify(shown, null, 2).slice(0, 1500))}\\`\\`\\`` : '';\nconst text = `*Approval needed:* ${esc(q.action_type)}\\n*Requested by:* ${esc(q.requested_by)}\\n*Summary:* ${esc(q.summary)}${amount}${det}\\n*Expires:* ${esc(expires)}\\n*ID:* \\`${esc(q.action_id)}\\``;\nconst payload = {\n  text: `Approval needed: ${esc(q.action_type)} from ${esc(q.requested_by)}`,\n  blocks: [\n    { type: 'section', text: { type: 'mrkdwn', text } },\n    { type: 'actions', block_id: 'approval_' + q.action_id, elements: [\n      { type: 'button', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', action_id: 'approve_btn', value: q.action_id },\n      { type: 'button', text: { type: 'plain_text', text: 'Deny' }, style: 'danger', action_id: 'deny_btn', value: q.action_id } ] } ] };\nreturn [{ json: { send: !!C.SLACK_WEBHOOK_URL, payload } }];"
+      },
+      "id": "g-10",
+      "name": "Build Slack Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        0
+      ],
+      "notes": "Slack message with Approve / Deny buttons. Every field is escaped (& < >) so a request cannot inject mentions or links into the approvers' channel. The buttons carry the action_id as their value."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-11",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-11",
+      "name": "Slack Configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Build Slack Prompt').first().json.payload }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "g-12",
+      "name": "Send Slack Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3640,
+        0
+      ],
+      "notes": "Single item, so n8n's own retry works here: up to 3 tries. If it still fails the workflow knows (the original ignored it).",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst q = $('Validate Request').first().json.req;\nconst rec = $('Create Verdict').first().json.record;\nconst sent = $('Build Slack Prompt').first().json.send;\nlet delivered = false;\nif (sent) { const r = $input.first().json; delivered = !r.error && typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300; }\nconst wait_seconds = Math.max(1, Math.round(Number(q.timeout_minutes) * 60));\nconst undelivered = sent && !delivered;\nconst escalate = q.escalate_after_minutes ? { after_seconds: Math.max(1, Math.round(Number(q.escalate_after_minutes) * 60)) } : null;\nreturn [{ json: { http_status: 200, response_body: { status: 'pending', action_id: q.action_id, required_approvals: q.required_approvals, expires_at: rec.expires_at, prompt_delivered: sent ? delivered : false, prompt: sent ? (delivered ? 'sent' : 'failed') : 'not_configured' },\n  wait_seconds, undelivered, escalate,\n  notification: { kind: 'requester', to: q.requested_by, text: `Your approval request \"${q.action_type}\" (${q.action_id}) was recorded, but the Slack prompt could not be delivered. Approvers can still approve through the API until it expires at ${rec.expires_at}.` } } }];"
+      },
+      "id": "g-13",
+      "name": "Prompt Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        0
+      ],
+      "notes": "Builds the \"pending\" reply. prompt_delivered tells the caller whether anyone was actually asked."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $input.first().json }];"
+      },
+      "id": "g-14",
+      "name": "Join Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        0
+      ],
+      "notes": "Merges the two Slack branches (sent / not configured) into one path."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-15",
+      "name": "Respond Early",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3080,
+        150
+      ],
+      "notes": "Replies to requests that stop early: bad input (400), bad token (401), misconfigured (500), duplicate (200 already_requested), store down (503)."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-16",
+      "name": "Respond Pending",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4480,
+        0
+      ],
+      "notes": "Replies \"pending\" immediately. Everything after this node (the wait, the auto-decline) happens with no caller attached."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-17",
+              "leftValue": "={{ $json.undelivered && !!$('CONFIG').first().json.NOTIFY_API_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-17",
+      "name": "Prompt Undelivered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.NOTIFY_API_URL.replace(/\\/+$/, '') + '/send' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { to: $('Prompt Result').first().json.notification.to, message: $('Prompt Result').first().json.notification.text } }}"
+      },
+      "id": "g-18",
+      "name": "Notify Requester (undelivered)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5040,
+        0
+      ],
+      "notes": "Tells the requester their prompt never reached Slack. Skipped silently if NOTIFY_API_URL is blank.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-19",
+              "leftValue": "={{ !!$('Prompt Result').first().json.escalate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-19",
+      "name": "Escalation Planned?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5320,
+        0
+      ],
+      "notes": "Only requests whose rule has escalate_after_minutes + escalate_to (and whose own timeout is longer) take the escalation path first."
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Prompt Result').first().json.escalate.after_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "g-20",
+      "name": "Wait For Escalation",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5600,
+        0
+      ],
+      "notes": "Holds until the escalation time. Approvals are recorded in the store, so this node only decides whether to escalate.",
+      "webhookId": "approval-escalation-wait"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.APPROVAL_STORE_API_URL.replace(/\\/+$/, '') + '/approvals/' + encodeURIComponent($('Validate Request').first().json.req.action_id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-21",
+      "name": "Get Approval (escalation)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5880,
+        0
+      ],
+      "notes": "GET /approvals/{id}: is it still pending?",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst C = $('CONFIG').first().json;\nconst MSG = { escalation: 'Escalated to you: \"{action_type}\" ({action_id}) requested by {requested_by} is still waiting for a decision.', ...$('Approval Policy').first().json.policy.messages };\nconst fillMsg = (t, v) => t.replace(/\\{(action_type|action_id|responder|requested_by)\\}/g, (m, k) => String(v[k]));   // one pass\nconst q = $('Validate Request').first().json.req;\nconst rec0 = $('Create Verdict').first().json.record;\nconst pr = $('Prompt Result').first().json;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nconst known = r.statusCode === 200 && b && b.record;\nconst pending = !known || b.record.status === 'pending';   // if the store cannot be asked, escalate anyway: one extra notice beats none\nconst notices = [];\nif (pending) {\n  const got = known && Array.isArray(b.record.approvals) ? b.record.approvals.length : 0;\n  if (C.SLACK_WEBHOOK_URL) notices.push({ kind: 'slack', url: C.SLACK_WEBHOOK_URL, body: { text: '[Approvals] ' + esc(`Approval request ${q.action_id} (${q.action_type}, requested by ${q.requested_by}) is still pending after ${q.escalate_after_minutes} minutes and was escalated to: ${q.escalate_to.join(', ')}. ${got} of ${q.required_approvals} approvals so far. It expires at ${rec0.expires_at}.`) } });\n  if (C.NOTIFY_API_URL) for (const to of q.escalate_to) notices.push({ kind: 'requester', url: C.NOTIFY_API_URL.replace(/\\/+$/, '') + '/send', body: { to, message: fillMsg(MSG.escalation, { action_type: q.action_type, action_id: q.action_id, responder: '', requested_by: q.requested_by }) } });\n}\nreturn [{ json: { notices, has_notices: notices.length > 0, still_pending: pending, remaining_seconds: Math.max(1, pr.wait_seconds - pr.escalate.after_seconds) } }];"
+      },
+      "id": "g-22",
+      "name": "Escalation Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6160,
+        0
+      ],
+      "notes": "Still pending at the escalation time? Then prepare the messages for the escalation contacts (via NOTIFY_API_URL) and ops (Slack); the rest of the timeout is waited afterwards. Already decided? Nothing is sent and the wait is skipped."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-23",
+              "leftValue": "={{ $json.still_pending }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-23",
+      "name": "Still Pending?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-24",
+              "leftValue": "={{ $json.has_notices }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-24",
+      "name": "Any Escalation Notices?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        0
+      ],
+      "notes": "Slack and/or NOTIFY_API_URL may be blank; then there is nothing to send and the wait simply continues."
+    },
+    {
+      "parameters": {
+        "jsCode": "return $('Escalation Check').first().json.notices.map((n) => ({ json: n }));"
+      },
+      "id": "g-25",
+      "name": "Escalation Notices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7000,
+        0
+      ],
+      "notes": "One item per message (one for ops in Slack, one per escalation contact)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $json.kind === 'requester' ? ($('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}') : '{}' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-26",
+      "name": "Send Escalation Notices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7280,
+        0
+      ],
+      "notes": "Sends the escalation messages BEFORE the rest of the wait starts. A failed notice is ignored on purpose (it must not break the approval).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { sent: true } }];"
+      },
+      "id": "g-27",
+      "name": "Escalation Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7560,
+        0
+      ],
+      "notes": "Runs once after all escalation messages went out, then the remaining wait begins."
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Escalation Check').isExecuted ? $('Escalation Check').first().json.remaining_seconds : $('Prompt Result').first().json.wait_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "g-28",
+      "name": "Wait For Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        7840,
+        0
+      ],
+      "notes": "Holds the execution until the request expires. Waits over about 65 seconds are saved to the n8n database, so they survive a restart. Approvals do NOT resume this node; they are recorded in the store, and this node only auto-declines what is still pending.",
+      "webhookId": "approval-wait"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.APPROVAL_STORE_API_URL.replace(/\\/+$/, '') + '/approvals/' + encodeURIComponent($('Validate Request').first().json.req.action_id) + '/resolve' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { decision: 'timeout', resolved_by: 'system_timeout' } }}"
+      },
+      "id": "g-29",
+      "name": "Resolve Timeout",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8120,
+        0
+      ],
+      "notes": "Atomic compare-and-set: only changes the record if it is STILL pending. 200 claimed:true -> we auto-declined it. 409 -> a human already answered: do nothing.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const MSG = { requester_denied: 'Your request \"{action_type}\" ({action_id}) was denied by {responder}. Nothing was executed.', requester_executed: 'Your request \"{action_type}\" ({action_id}) was approved by {responder} and executed.', requester_timeout: 'Your request \"{action_type}\" ({action_id}) was not approved in time and has been auto-declined. Nothing was executed.', ...$('Approval Policy').first().json.policy.messages };\nconst fillMsg = (t, v) => t.replace(/\\{(action_type|action_id|responder|requested_by)\\}/g, (m, k) => String(v[k]));   // one pass\nconst q = $('Validate Request').first().json.req;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nconst n = [];\nif (r.statusCode === 200 && b && b.claimed === true) {\n  n.push({ kind: 'requester', to: q.requested_by, text: fillMsg(MSG.requester_timeout, { action_type: q.action_type, action_id: q.action_id, responder: 'system_timeout', requested_by: q.requested_by }) });\n  n.push({ kind: 'slack', text: `Approval request ${q.action_id} (${q.action_type}, requested by ${q.requested_by}) expired and was auto-declined.` });\n} else if (r.statusCode === 409) {\n  // already answered by a human (or already auto-declined): nothing to do\n} else {\n  n.push({ kind: 'slack', text: `ATTENTION: approval request ${q.action_id} (${q.action_type}) reached its deadline but could not be auto-declined (approval store unavailable). It may still be pending in the store. A late approval would be refused only if the store enforces expiry.` });\n}\nreturn [{ json: { notifications: n } }];"
+      },
+      "id": "g-30",
+      "name": "Timeout Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8400,
+        0
+      ],
+      "notes": "Claimed -> tell the requester and Slack. Already answered -> nothing. Store error -> alert ops that the request may be stuck pending."
+    },
+    {
+      "parameters": {
+        "jsCode": "const inp = $input.first().json;\nconst headers = inp.headers || {};\nlet raw = '';\ntry { const buf = await this.helpers.getBinaryDataBuffer(0, 'data'); raw = buf.toString('utf8'); } catch (e) { raw = ''; }\nconst body = inp.body;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (error, details) => [{ json: { ok: false, http_status: 400, response_body: { error, ...(details ? { details } : {}) }, notifications: [], next: 'none' } }];\nif (!isObj(body)) return reject('validation_failed', ['body must be JSON, or a Slack interaction payload']);\nlet via = 'api', action_id, decision, identities = [], responder = '';\nif (body.payload !== undefined) {\n  via = 'slack';\n  let p = body.payload;\n  if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { return reject('validation_failed', ['payload is not valid JSON']); } }\n  if (!isObj(p) || !Array.isArray(p.actions) || !isObj(p.actions[0])) return reject('validation_failed', ['payload has no button action']);\n  const a = p.actions[0];\n  action_id = a.value;\n  decision = a.action_id === 'approve_btn' ? 'approve' : a.action_id === 'deny_btn' ? 'deny' : undefined;\n  const u = isObj(p.user) ? p.user : {};\n  identities = [u.username, u.name, u.id].filter((x) => typeof x === 'string' && x).map((x) => x.toLowerCase());\n  responder = u.username || u.name || u.id || '';\n} else {\n  action_id = body.action_id;\n  decision = { approve: 'approve', approved: 'approve', deny: 'deny', denied: 'deny', reject: 'deny' }[String(body.decision || '').toLowerCase()];\n  responder = typeof body.responder === 'string' ? body.responder.trim() : '';\n  if (responder) identities = [responder.toLowerCase()];\n}\nconst errors = [];\nif (typeof action_id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(action_id)) errors.push('action_id is missing or invalid');\nif (!decision) errors.push('decision must be \"approve\" or \"deny\"');\nif (!responder || responder.length > 200) errors.push('responder is required (1-200 characters)');\nif (errors.length) return reject('validation_failed', errors);\nconst ts = String(headers['x-slack-request-timestamp'] || '');\nreturn [{ json: { ok: true, via, req: { action_id, decision, responder, identities }, slack_ts: ts, slack_sig: String(headers['x-slack-signature'] || ''), slack_base: via === 'slack' ? `v0:${ts}:${raw}` : 'none' } }];"
+      },
+      "id": "g-31",
+      "name": "Parse Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        150
+      ],
+      "notes": "Understands both callers: Slack button click (form field `payload`) and direct API {action_id, decision, responder}. Reads the raw bytes for signature checking."
+    },
+    {
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "value": "={{ $json.ok ? $json.slack_base : 'none' }}",
+        "dataPropertyName": "slack_hmac",
+        "secret": "={{ $('CONFIG').first().json.SLACK_SIGNING_SECRET || 'unset' }}",
+        "encoding": "hex"
+      },
+      "id": "g-32",
+      "name": "Slack Signature (HMAC)",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        1960,
+        150
+      ],
+      "notes": "Computes HMAC-SHA256 of v0:timestamp:rawbody with your Slack signing secret. Authorize compares it with Slack's X-Slack-Signature header. (A Code node cannot use `crypto` in current n8n.)",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst bad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nfor (const k of ['APPROVAL_STORE_API_URL', 'ACTION_EXECUTOR_API_URL']) if (!url(C[k])) bad.push(`CONFIG.${k} must start with http:// or https://`);\nfor (const k of ['NOTIFY_API_URL', 'SLACK_WEBHOOK_URL']) if (C[k] && !url(C[k])) bad.push(`CONFIG.${k} must be blank or start with http:// or https://`);\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nfor (const k of ['DEFAULT_TIMEOUT_MINUTES', 'MIN_TIMEOUT_MINUTES', 'MAX_TIMEOUT_MINUTES', 'REQUEST_TIMEOUT_MS', 'EXECUTOR_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (Number(C.MIN_TIMEOUT_MINUTES) > Number(C.MAX_TIMEOUT_MINUTES)) bad.push('CONFIG.MIN_TIMEOUT_MINUTES must not be larger than MAX_TIMEOUT_MINUTES');\nif (Number(C.DEFAULT_TIMEOUT_MINUTES) < Number(C.MIN_TIMEOUT_MINUTES) || Number(C.DEFAULT_TIMEOUT_MINUTES) > Number(C.MAX_TIMEOUT_MINUTES)) bad.push('CONFIG.DEFAULT_TIMEOUT_MINUTES must be between MIN_ and MAX_TIMEOUT_MINUTES');\nconst PL = $('Approval Policy').first().json.policy;\nconst plBad = (m) => bad.push('Policy: ' + m);\nconst hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);\nif (!isObj(PL)) plBad('the Approval Policy node did not return a \"policy\" object');\nelse {\n  const names = (v, max, len) => Array.isArray(v) && v.length <= max && v.every((x) => typeof x === 'string' && x.trim() !== '' && x.length <= len) && new Set(v).size === v.length;\n  if (!names(PL.allowed_action_types, 100, 100)) plBad('allowed_action_types must be a list of at most 100 different names (blank list = any type)');\n  const checkRule = (r, w) => {\n    if (!isObj(r)) { plBad(`${w} must be an object`); return; }\n    for (const k of Object.keys(r)) if (!['approvers', 'timeout_minutes', 'self_approval', 'prompt_fields', 'required_approvals', 'escalate_after_minutes', 'escalate_to'].includes(k)) plBad(`${w}.${k} is not a known setting (approvers, timeout_minutes, self_approval, prompt_fields, required_approvals, escalate_after_minutes, escalate_to)`);\n    if (r.approvers !== undefined && !names(r.approvers, 50, 200)) plBad(`${w}.approvers must be a list of at most 50 different names`);\n    if (r.timeout_minutes !== undefined && r.timeout_minutes !== null && !(typeof r.timeout_minutes === 'number' && r.timeout_minutes >= Number(C.MIN_TIMEOUT_MINUTES) && r.timeout_minutes <= Number(C.MAX_TIMEOUT_MINUTES))) plBad(`${w}.timeout_minutes must be null or a number between ${C.MIN_TIMEOUT_MINUTES} and ${C.MAX_TIMEOUT_MINUTES}`);\n    if (r.self_approval !== undefined && r.self_approval !== null && r.self_approval !== false) plBad(`${w}.self_approval may only be false (forbid) or null (follow CONFIG.SELF_APPROVAL_ALLOWED); a policy cannot loosen it`);\n    if (r.prompt_fields !== undefined && r.prompt_fields !== null && !names(r.prompt_fields, 20, 64)) plBad(`${w}.prompt_fields must be null (show all details) or a list of at most 20 detail names`);\n    if (r.required_approvals !== undefined && !(Number.isInteger(r.required_approvals) && r.required_approvals >= 1 && r.required_approvals <= 10)) plBad(`${w}.required_approvals must be a whole number from 1 to 10`);\n    if (typeof r.required_approvals === 'number' && r.required_approvals > 1 && !C.APPROVER_API_TOKEN && !C.SLACK_SIGNING_SECRET) plBad(`${w}.required_approvals above 1 needs CONFIG.APPROVER_API_TOKEN or CONFIG.SLACK_SIGNING_SECRET (on an open approve endpoint anyone could invent several approver names)`);\n    if (r.escalate_after_minutes !== undefined && r.escalate_after_minutes !== null && !(typeof r.escalate_after_minutes === 'number' && r.escalate_after_minutes >= Number(C.MIN_TIMEOUT_MINUTES) && r.escalate_after_minutes <= Number(C.MAX_TIMEOUT_MINUTES))) plBad(`${w}.escalate_after_minutes must be null or a number between ${C.MIN_TIMEOUT_MINUTES} and ${C.MAX_TIMEOUT_MINUTES}`);\n    if (r.escalate_to !== undefined && !names(r.escalate_to, 20, 200)) plBad(`${w}.escalate_to must be a list of at most 20 different names`);\n    const hasEsc = typeof r.escalate_after_minutes === 'number', hasTo = Array.isArray(r.escalate_to) && r.escalate_to.length > 0;\n    if (hasEsc !== hasTo) plBad(`${w}: escalate_after_minutes and escalate_to must be set together`);\n    if (Array.isArray(r.approvers) && r.approvers.length && Number.isInteger(r.required_approvals)) {\n      const pool = new Set(r.approvers.concat(hasTo ? r.escalate_to : []).map((x) => String(x).toLowerCase()));\n      if (r.required_approvals > pool.size) plBad(`${w}.required_approvals (${r.required_approvals}) is more than the people who can approve (${pool.size})`);\n    }\n  };\n  checkRule(PL.default, 'default');\n  if (!isObj(PL.by_action_type)) plBad('by_action_type must be an object');\n  else for (const [t, r] of Object.entries(PL.by_action_type)) {\n    if (!t.trim() || t.length > 100) plBad('by_action_type has an invalid action type name');\n    else if (Array.isArray(PL.allowed_action_types) && PL.allowed_action_types.length && !PL.allowed_action_types.includes(t)) plBad(`by_action_type.${t}: \"${t}\" is not in allowed_action_types`);\n    checkRule(r, `by_action_type.${t}`);\n  }\n  if (!isObj(PL.messages)) plBad('messages must be an object');\n  else for (const [k, v] of Object.entries(PL.messages)) {\n    if (!['requester_denied', 'requester_executed', 'requester_timeout', 'escalation'].includes(k)) plBad(`messages.${k} is not a known message (requester_denied, requester_executed, requester_timeout, escalation)`);\n    else if (typeof v !== 'string' || !v.trim() || v.length > 500) plBad(`messages.${k} must be text of 1 to 500 characters`);\n  }\n}\nconst P = $('Parse Decision').first().json;\nconst inp = $('Webhook: Approval Response').first().json;\nconst headers = inp.headers || {};\nconst reject = (status, error, extra) => [{ json: { ok: false, http_status: status, response_body: { error, ...(extra || {}) }, notifications: [], next: 'none' } }];\nif (!P.ok) return [{ json: P }];   // Parse Decision already built the 400 reply\nif (bad.length) return reject(500, 'approval_misconfigured', { details: bad });\nconst tokenSet = !!C.APPROVER_API_TOKEN, slackSet = !!C.SLACK_SIGNING_SECRET;\nconst tokenOk = tokenSet && headers['x-approver-token'] === C.APPROVER_API_TOKEN;\nlet slackOk = false;\nif (slackSet && P.via === 'slack') {\n  const age = Math.abs(Date.now() / 1000 - Number(P.slack_ts));\n  slackOk = P.slack_ts !== '' && age <= 300 && P.slack_sig.length > 10 && P.slack_sig === 'v0=' + String($input.first().json.slack_hmac || '');\n}\nlet auth = 'open';\nif (tokenSet || slackSet) {\n  if (tokenOk) auth = 'token'; else if (slackOk) auth = 'slack';\n  else return reject(401, 'unauthorized');\n}\nconst allowed = String(C.ALLOWED_APPROVERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);\nif (allowed.length && !P.req.identities.some((i) => allowed.includes(i))) return reject(403, 'not_an_approver', { responder: P.req.responder });\nreturn [{ json: { ok: true, auth, req: P.req } }];"
+      },
+      "id": "g-33",
+      "name": "Authorize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        150
+      ],
+      "notes": "Who may decide. Slack: signature must match and be under 5 minutes old. API: x-approver-token header. If you set neither secret the endpoint is OPEN (like the original) and the reply says auth:\"open\". ALLOWED_APPROVERS limits which people count."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-34",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-34",
+      "name": "Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.APPROVAL_STORE_API_URL.replace(/\\/+$/, '') + '/approvals/' + encodeURIComponent($('Parse Decision').first().json.req.action_id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-35",
+      "name": "Get Approval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        150
+      ],
+      "notes": "GET /approvals/{id} -> 200 {record} or 404.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst A = $('Authorize').first().json;\nconst q = A.req;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nconst stop = (status, body) => [{ json: { ok: false, http_status: status, response_body: body, notifications: [], next: 'none' } }];\nif (r.statusCode === 404) return stop(404, { error: 'unknown_action', action_id: q.action_id });\nif (r.statusCode !== 200 || !b || !b.record) return stop(503, { error: 'approval_store_unavailable', action_id: q.action_id, retry: true });\nconst rec = b.record;\nconst pl = $('Approval Policy').first().json.policy;\nconst rule = Object.prototype.hasOwnProperty.call(pl.by_action_type, rec.action_type) ? pl.by_action_type[rec.action_type] : pl.default;\nconst typeApprovers = (rule.approvers || []).map((x) => String(x).toLowerCase());\nconst escOn = !!rule.escalate_after_minutes && Array.isArray(rule.escalate_to) && rule.escalate_to.length > 0 && Number(rule.escalate_after_minutes) < Number(rec.timeout_minutes) && Date.now() >= Date.parse(rec.created_at) + Number(rule.escalate_after_minutes) * 60000;   // once escalated, the escalation contacts may decide too\nconst eligible = typeApprovers.length ? typeApprovers.concat(escOn ? rule.escalate_to.map((x) => String(x).toLowerCase()) : []) : [];\nif (eligible.length && !q.identities.some((i) => eligible.includes(i))) return stop(403, { error: 'not_an_approver', action_id: q.action_id, responder: q.responder });\nif (rec.status !== 'pending') return stop(200, { status: 'already_resolved', action_id: q.action_id, state: rec.status });\nif (q.decision === 'approve' && (!C.SELF_APPROVAL_ALLOWED || rule.self_approval === false) && rec.requested_by && q.identities.includes(String(rec.requested_by).toLowerCase()))\n  return stop(403, { error: 'self_approval_not_allowed', action_id: q.action_id });\nconst need = Math.max(1, Number(rec.required_approvals) || 1, Number(rule.required_approvals) || 1);   // never less than the policy says, whatever the store holds\nif (q.decision === 'approve' && Array.isArray(rec.approvals) && rec.approvals.some((a) => q.identities.includes(String(a.by).toLowerCase()))) return stop(200, { status: 'already_voted', action_id: q.action_id, approvals: rec.approvals.length, required: need });\nreturn [{ json: { ok: true, record: rec, required: need } }];"
+      },
+      "id": "g-36",
+      "name": "Check Approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        300
+      ],
+      "notes": "404 -> unknown_action. Store error -> 503 retry (never mislabelled as \"already_resolved\"). Already decided -> already_resolved. Requester approving their own request -> 403 (denying their own is fine). Set SELF_APPROVAL_ALLOWED=true to permit it."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-37",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-37",
+      "name": "Can Resolve?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.APPROVAL_STORE_API_URL.replace(/\\/+$/, '') + '/approvals/' + encodeURIComponent($('Authorize').first().json.req.action_id) + '/resolve' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { decision: $('Authorize').first().json.req.decision, resolved_by: $('Authorize').first().json.req.responder, required_approvals: $('Check Approval').first().json.required } }}"
+      },
+      "id": "g-38",
+      "name": "Resolve Approval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3640,
+        150
+      ],
+      "notes": "THE decision point. Atomic compare-and-set in the store: with two clicks, or an approval racing the timeout, exactly one call gets claimed:true. With required_approvals above 1 the store records each different approver and only claims on the last one needed (until then: 200 claimed:false pending:true).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const MSG = { requester_denied: 'Your request \"{action_type}\" ({action_id}) was denied by {responder}. Nothing was executed.', requester_executed: 'Your request \"{action_type}\" ({action_id}) was approved by {responder} and executed.', requester_timeout: 'Your request \"{action_type}\" ({action_id}) was not approved in time and has been auto-declined. Nothing was executed.', ...$('Approval Policy').first().json.policy.messages };\nconst fillMsg = (t, v) => t.replace(/\\{(action_type|action_id|responder|requested_by)\\}/g, (m, k) => String(v[k]));   // one pass\nconst A = $('Authorize').first().json;\nconst q = A.req;\nconst rec0 = $('Check Approval').first().json.record;\nconst need = $('Check Approval').first().json.required || 1;\nconst r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : {};\nconst out = (status, body, extra = {}) => [{ json: { ok: true, http_status: status, response_body: body, notifications: [], next: 'none', ...extra } }];\nconst votes = b.record && Array.isArray(b.record.approvals) ? b.record.approvals.map((a) => String(a.by)) : [];\nconst distinct = new Set(votes.map((v) => v.toLowerCase())).size;\nif (r.statusCode === 200 && b.claimed === false && b.pending === true) {\n  if (b.duplicate) return out(200, { status: 'already_voted', action_id: q.action_id, approvals: distinct, required: need });\n  return out(200, { status: 'approval_recorded', action_id: q.action_id, approvals: distinct, required: need, approved_by: votes, auth: A.auth }, { notifications: [\n    { kind: 'slack', text: `Approval request ${q.action_id} (${rec0.action_type}): ${distinct} of ${need} approvals recorded (latest: ${q.responder}).` } ] });\n}\nif (r.statusCode === 200 && b.claimed === true) {\n  const status = q.decision === 'approve' ? 'approved' : 'denied';\n  const body = { status, action_id: q.action_id, resolved_by: q.responder, auth: A.auth };\n  if (status === 'approved' && need > 1 && distinct < need) {   // the store claimed the request without collecting the approvals we asked for: do NOT run it\n    return out(502, { error: 'store_ignored_required_approvals', action_id: q.action_id, required: need, recorded: distinct }, { notifications: [\n      { kind: 'slack', text: `ATTENTION: approval request ${q.action_id} (${rec0.action_type}) needs ${need} approvals but the approval store marked it approved after ${distinct}. It was NOT executed. The store must implement required_approvals (see README).` } ] });\n  }\n  if (status === 'approved') {\n    const all = votes.length ? votes : [q.responder];\n    const approved_text = all.length > 1 ? all.slice(0, -1).join(', ') + ' and ' + all[all.length - 1] : all[0];\n    return out(200, { ...body, ...(need > 1 ? { approved_by: all, required_approvals: need } : {}) }, { next: 'execute', record: b.record || rec0, approved_by_all: all, approved_text });\n  }\n  return out(200, body, { notifications: [\n    { kind: 'requester', to: rec0.requested_by, text: fillMsg(MSG.requester_denied, { action_type: rec0.action_type, action_id: q.action_id, responder: q.responder, requested_by: rec0.requested_by }) },\n    { kind: 'slack', text: `Approval request ${q.action_id} (${rec0.action_type}) denied by ${q.responder}.` } ] });\n}\nif (r.statusCode === 409 && b.expired) {\n  return out(410, { error: 'request_expired', action_id: q.action_id, state: 'auto_declined' }, { notifications: [\n    { kind: 'requester', to: rec0.requested_by, text: `Your request \"${rec0.action_type}\" (${q.action_id}) expired before it was answered and has been auto-declined. Nothing was executed.` },\n    { kind: 'slack', text: `Approval request ${q.action_id} (${rec0.action_type}) expired before ${q.responder} answered; auto-declined.` } ] });\n}\nif (r.statusCode === 409) return out(200, { status: 'already_resolved', action_id: q.action_id, state: (b.record && b.record.status) || 'resolved' });\nif (r.statusCode === 404) return out(404, { error: 'unknown_action', action_id: q.action_id });\nreturn out(503, { error: 'approval_store_unavailable', action_id: q.action_id, retry: true });"
+      },
+      "id": "g-39",
+      "name": "Resolve Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        150
+      ],
+      "notes": "claimed -> approved/denied. Too late (expired) -> 410. Someone else got there first -> already_resolved. Store error -> 503 retry:true, so a failed approval is never reported as \"already resolved\"."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-40",
+      "name": "Respond Decision",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4200,
+        150
+      ],
+      "notes": "The single reply for the decision flow. Replies BEFORE the executor runs, so Slack's 3-second limit is never at risk."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-41",
+              "leftValue": "={{ $json.next === 'execute' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-41",
+      "name": "Execute Action?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.ACTION_EXECUTOR_API_URL.replace(/\\/+$/, '') + '/execute' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.EXECUTOR_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { action_id: $('Resolve Verdict').first().json.record.action_id, action_type: $('Resolve Verdict').first().json.record.action_type, details: $('Resolve Verdict').first().json.record.details, amount: $('Resolve Verdict').first().json.record.amount, approved_by: $('Authorize').first().json.req.responder, approved_by_all: $('Resolve Verdict').first().json.approved_by_all, idempotency_key: 'approval:' + $('Resolve Verdict').first().json.record.action_id } }}"
+      },
+      "id": "g-42",
+      "name": "Execute Action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4760,
+        150
+      ],
+      "notes": "POST /execute {action_id, action_type, details, amount, approved_by, approved_by_all, idempotency_key}. The executor gets everything it needs and an idempotency key. NOT retried here: it has side effects, so a retry must be the executor's decision (use the key).",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const MSG = { requester_denied: 'Your request \"{action_type}\" ({action_id}) was denied by {responder}. Nothing was executed.', requester_executed: 'Your request \"{action_type}\" ({action_id}) was approved by {responder} and executed.', requester_timeout: 'Your request \"{action_type}\" ({action_id}) was not approved in time and has been auto-declined. Nothing was executed.', ...$('Approval Policy').first().json.policy.messages };\nconst fillMsg = (t, v) => t.replace(/\\{(action_type|action_id|responder|requested_by)\\}/g, (m, k) => String(v[k]));   // one pass\nconst rec = $('Resolve Verdict').first().json.record;\nconst A = $('Authorize').first().json;\nconst r = $input.first().json;\nconst ok = typeof r.statusCode === 'number' && r.statusCode >= 200 && r.statusCode < 300;\nconst unknown = typeof r.statusCode !== 'number';\nconst detail = ok ? '' : unknown ? 'no response from the executor: ' + String((r.error && (r.error.message || r.error)) || 'timeout').slice(0, 160) : 'HTTP ' + r.statusCode;\nconst status = ok ? 'executed' : unknown ? 'unknown' : 'failed';\nconst n = [];\nif (ok) {\n  n.push({ kind: 'requester', to: rec.requested_by, text: fillMsg(MSG.requester_executed, { action_type: rec.action_type, action_id: rec.action_id, responder: $('Resolve Verdict').first().json.approved_text || A.req.responder, requested_by: rec.requested_by }) });\n} else {\n  n.push({ kind: 'requester', to: rec.requested_by, text: unknown\n    ? `Your request \"${rec.action_type}\" (${rec.action_id}) was approved, but we did not get a response from the executor, so the result is unknown. Ops has been alerted.`\n    : `Your request \"${rec.action_type}\" (${rec.action_id}) was approved, but executing it failed (${detail}). Ops has been alerted.` });\n  n.push({ kind: 'slack', text: unknown\n    ? `ATTENTION: approved action ${rec.action_id} (${rec.action_type}): executor gave NO response (${detail}). It may or may not have run. Check before retrying; the idempotency key is approval:${rec.action_id}.`\n    : `ATTENTION: approved action ${rec.action_id} (${rec.action_type}) FAILED to execute (${detail}). Idempotency key: approval:${rec.action_id}.` });\n}\nreturn [{ json: { execution: { status, detail }, notifications: n } }];"
+      },
+      "id": "g-43",
+      "name": "Execution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        150
+      ],
+      "notes": "Success, definite failure (HTTP error) or unknown (no response). Unknown is reported as unknown, never as failed, because the action may have run."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.APPROVAL_STORE_API_URL.replace(/\\/+$/, '') + '/approvals/' + encodeURIComponent($('Authorize').first().json.req.action_id) + '/execution' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { status: $('Execution Result').first().json.execution.status, detail: $('Execution Result').first().json.execution.detail } }}"
+      },
+      "id": "g-44",
+      "name": "Record Execution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5320,
+        150
+      ],
+      "notes": "Writes the outcome back to the store so the record shows what actually happened.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const list = $('Execution Result').first().json.notifications.slice();\nconst r = $input.first().json;\nif (typeof r.statusCode !== 'number' || r.statusCode >= 300) {\n  const q = $('Authorize').first().json.req;\n  list.push({ kind: 'slack', text: `Approval ${q.action_id}: the execution outcome could not be recorded in the approval store (${typeof r.statusCode === 'number' ? 'HTTP ' + r.statusCode : 'no response'}).` });\n}\nreturn [{ json: { notifications: list } }];"
+      },
+      "id": "g-45",
+      "name": "Execution Notices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        150
+      ],
+      "notes": "Adds an ops alert if the outcome could not be written to the store."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "approvals/reconcile",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-46",
+      "name": "Webhook: Reconcile",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "POST /webhook/approvals/reconcile with header x-reconcile-token: runs the reconcile job now and replies with a summary. Off (403) unless CONFIG.RECONCILE_ENABLED is true.",
+      "webhookId": "approval-reconcile"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "g-47",
+      "name": "Schedule: Reconcile",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        450
+      ],
+      "notes": "Runs the reconcile job every 15 minutes (edit the interval here). Does nothing unless CONFIG.RECONCILE_ENABLED is true."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { _via: 'schedule' } }];"
+      },
+      "id": "g-48",
+      "name": "Mark Reconcile (schedule)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "Tags the run so it takes the reconcile path after CONFIG."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$input.first().json, _via: 'api' } }];"
+      },
+      "id": "g-49",
+      "name": "Mark Reconcile (api)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        150
+      ],
+      "notes": "Tags the run so it takes the reconcile path after CONFIG."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-50",
+              "leftValue": "={{ $json._via === 'schedule' || $json._via === 'api' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-50",
+      "name": "Is Reconcile?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ],
+      "notes": "Requests, decisions and reconcile runs share one CONFIG node and the Approval Policy; this sends reconcile runs down their own path."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst bad = [];\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nfor (const k of ['APPROVAL_STORE_API_URL', 'ACTION_EXECUTOR_API_URL']) if (!url(C[k])) bad.push(`CONFIG.${k} must start with http:// or https://`);\nfor (const k of ['NOTIFY_API_URL', 'SLACK_WEBHOOK_URL']) if (C[k] && !url(C[k])) bad.push(`CONFIG.${k} must be blank or start with http:// or https://`);\ntry { if (!isObj(JSON.parse(C.SERVICE_HEADERS_JSON || '{}'))) throw 0; } catch (e) { bad.push('CONFIG.SERVICE_HEADERS_JSON must be a JSON object'); }\nfor (const k of ['DEFAULT_TIMEOUT_MINUTES', 'MIN_TIMEOUT_MINUTES', 'MAX_TIMEOUT_MINUTES', 'REQUEST_TIMEOUT_MS', 'EXECUTOR_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (Number(C.MIN_TIMEOUT_MINUTES) > Number(C.MAX_TIMEOUT_MINUTES)) bad.push('CONFIG.MIN_TIMEOUT_MINUTES must not be larger than MAX_TIMEOUT_MINUTES');\nif (Number(C.DEFAULT_TIMEOUT_MINUTES) < Number(C.MIN_TIMEOUT_MINUTES) || Number(C.DEFAULT_TIMEOUT_MINUTES) > Number(C.MAX_TIMEOUT_MINUTES)) bad.push('CONFIG.DEFAULT_TIMEOUT_MINUTES must be between MIN_ and MAX_TIMEOUT_MINUTES');\nconst PL = $('Approval Policy').first().json.policy;\nconst plBad = (m) => bad.push('Policy: ' + m);\nconst hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);\nif (!isObj(PL)) plBad('the Approval Policy node did not return a \"policy\" object');\nelse {\n  const names = (v, max, len) => Array.isArray(v) && v.length <= max && v.every((x) => typeof x === 'string' && x.trim() !== '' && x.length <= len) && new Set(v).size === v.length;\n  if (!names(PL.allowed_action_types, 100, 100)) plBad('allowed_action_types must be a list of at most 100 different names (blank list = any type)');\n  const checkRule = (r, w) => {\n    if (!isObj(r)) { plBad(`${w} must be an object`); return; }\n    for (const k of Object.keys(r)) if (!['approvers', 'timeout_minutes', 'self_approval', 'prompt_fields', 'required_approvals', 'escalate_after_minutes', 'escalate_to'].includes(k)) plBad(`${w}.${k} is not a known setting (approvers, timeout_minutes, self_approval, prompt_fields, required_approvals, escalate_after_minutes, escalate_to)`);\n    if (r.approvers !== undefined && !names(r.approvers, 50, 200)) plBad(`${w}.approvers must be a list of at most 50 different names`);\n    if (r.timeout_minutes !== undefined && r.timeout_minutes !== null && !(typeof r.timeout_minutes === 'number' && r.timeout_minutes >= Number(C.MIN_TIMEOUT_MINUTES) && r.timeout_minutes <= Number(C.MAX_TIMEOUT_MINUTES))) plBad(`${w}.timeout_minutes must be null or a number between ${C.MIN_TIMEOUT_MINUTES} and ${C.MAX_TIMEOUT_MINUTES}`);\n    if (r.self_approval !== undefined && r.self_approval !== null && r.self_approval !== false) plBad(`${w}.self_approval may only be false (forbid) or null (follow CONFIG.SELF_APPROVAL_ALLOWED); a policy cannot loosen it`);\n    if (r.prompt_fields !== undefined && r.prompt_fields !== null && !names(r.prompt_fields, 20, 64)) plBad(`${w}.prompt_fields must be null (show all details) or a list of at most 20 detail names`);\n    if (r.required_approvals !== undefined && !(Number.isInteger(r.required_approvals) && r.required_approvals >= 1 && r.required_approvals <= 10)) plBad(`${w}.required_approvals must be a whole number from 1 to 10`);\n    if (typeof r.required_approvals === 'number' && r.required_approvals > 1 && !C.APPROVER_API_TOKEN && !C.SLACK_SIGNING_SECRET) plBad(`${w}.required_approvals above 1 needs CONFIG.APPROVER_API_TOKEN or CONFIG.SLACK_SIGNING_SECRET (on an open approve endpoint anyone could invent several approver names)`);\n    if (r.escalate_after_minutes !== undefined && r.escalate_after_minutes !== null && !(typeof r.escalate_after_minutes === 'number' && r.escalate_after_minutes >= Number(C.MIN_TIMEOUT_MINUTES) && r.escalate_after_minutes <= Number(C.MAX_TIMEOUT_MINUTES))) plBad(`${w}.escalate_after_minutes must be null or a number between ${C.MIN_TIMEOUT_MINUTES} and ${C.MAX_TIMEOUT_MINUTES}`);\n    if (r.escalate_to !== undefined && !names(r.escalate_to, 20, 200)) plBad(`${w}.escalate_to must be a list of at most 20 different names`);\n    const hasEsc = typeof r.escalate_after_minutes === 'number', hasTo = Array.isArray(r.escalate_to) && r.escalate_to.length > 0;\n    if (hasEsc !== hasTo) plBad(`${w}: escalate_after_minutes and escalate_to must be set together`);\n    if (Array.isArray(r.approvers) && r.approvers.length && Number.isInteger(r.required_approvals)) {\n      const pool = new Set(r.approvers.concat(hasTo ? r.escalate_to : []).map((x) => String(x).toLowerCase()));\n      if (r.required_approvals > pool.size) plBad(`${w}.required_approvals (${r.required_approvals}) is more than the people who can approve (${pool.size})`);\n    }\n  };\n  checkRule(PL.default, 'default');\n  if (!isObj(PL.by_action_type)) plBad('by_action_type must be an object');\n  else for (const [t, r] of Object.entries(PL.by_action_type)) {\n    if (!t.trim() || t.length > 100) plBad('by_action_type has an invalid action type name');\n    else if (Array.isArray(PL.allowed_action_types) && PL.allowed_action_types.length && !PL.allowed_action_types.includes(t)) plBad(`by_action_type.${t}: \"${t}\" is not in allowed_action_types`);\n    checkRule(r, `by_action_type.${t}`);\n  }\n  if (!isObj(PL.messages)) plBad('messages must be an object');\n  else for (const [k, v] of Object.entries(PL.messages)) {\n    if (!['requester_denied', 'requester_executed', 'requester_timeout', 'escalation'].includes(k)) plBad(`messages.${k} is not a known message (requester_denied, requester_executed, requester_timeout, escalation)`);\n    else if (typeof v !== 'string' || !v.trim() || v.length > 500) plBad(`messages.${k} must be text of 1 to 500 characters`);\n  }\n}\nconst inp = $input.first().json;\nconst sched = inp._via === 'schedule';\nconst out = (status, error, details, tell) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: tell ? [{ kind: 'slack', text: tell }] : [] } }];\nif (C.RECONCILE_ENABLED !== true) return out(403, 'reconcile_disabled');\nconst rbad = [];\nif (typeof C.RECONCILE_AUTH_TOKEN !== 'string' || C.RECONCILE_AUTH_TOKEN.length < 8) rbad.push('CONFIG.RECONCILE_AUTH_TOKEN must be set (at least 8 characters) when RECONCILE_ENABLED is true');\nif (typeof C.RECONCILE_EXPIRE !== 'boolean') rbad.push('CONFIG.RECONCILE_EXPIRE must be true or false');\nif (typeof C.RECONCILE_EXECUTE !== 'boolean') rbad.push('CONFIG.RECONCILE_EXECUTE must be true or false');\nif (!(Number(C.RECONCILE_STALE_SECONDS) > Number(C.EXECUTOR_TIMEOUT_MS) / 1000)) rbad.push('CONFIG.RECONCILE_STALE_SECONDS must be larger than EXECUTOR_TIMEOUT_MS in seconds (an action that is still running normally must never look stuck)');\nif (!(Number.isInteger(Number(C.RECONCILE_MAX_PER_RUN)) && Number(C.RECONCILE_MAX_PER_RUN) >= 1 && Number(C.RECONCILE_MAX_PER_RUN) <= 200)) rbad.push('CONFIG.RECONCILE_MAX_PER_RUN must be a whole number from 1 to 200');\nif (rbad.length) return out(500, 'reconcile_misconfigured', rbad, sched ? '[Approvals] Reconcile is switched on but misconfigured: ' + rbad.join('; ') + '.' : null);\nif (!sched && (inp.headers || {})['x-reconcile-token'] !== C.RECONCILE_AUTH_TOKEN) return out(401, 'unauthorized');\nif (bad.length) return out(500, 'approval_misconfigured', bad, sched ? '[Approvals] Reconcile could not run, CONFIG or the policy is invalid: ' + bad.join('; ') + '.' : null);\nreturn [{ json: { ok: true } }];"
+      },
+      "id": "g-51",
+      "name": "Plan Reconcile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        150
+      ],
+      "notes": "Order: switch (403), reconcile settings (500), token (401, API calls only), CONFIG and policy (500). A scheduled run that cannot run tells ops in Slack."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-52",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-52",
+      "name": "Reconcile Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst PL = $('Approval Policy').first().json.policy;\nconst MSG = { requester_executed: 'Your request \"{action_type}\" ({action_id}) was approved by {responder} and executed.', requester_timeout: 'Your request \"{action_type}\" ({action_id}) was not approved in time and has been auto-declined. Nothing was executed.', ...PL.messages };\nconst fillMsg = (t, v) => t.replace(/\\{(action_type|action_id|responder|requested_by)\\}/g, (m, k) => String(v[k]));   // one pass\nconst headers = JSON.parse(C.SERVICE_HEADERS_JSON || '{}');\nconst base = (u) => String(u).replace(/\\/+$/, '');\nconst call = async (method, url, body, timeout) => {\n  try {\n    const r = await this.helpers.httpRequest({ method, url, body, json: true, headers, timeout: timeout || Number(C.REQUEST_TIMEOUT_MS), returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return { status: r.statusCode, body: r.body };\n  } catch (e) { return { status: null, error: String((e && e.message) || e).slice(0, 160) }; }\n};\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst idOk = (v) => typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v);\nconst why = (r) => (r.status === null ? 'no response' : 'HTTP ' + r.status);\nconst enc = encodeURIComponent;\nconst store = base(C.APPROVAL_STORE_API_URL);\nconst max = Number(C.RECONCILE_MAX_PER_RUN), staleSec = Number(C.RECONCILE_STALE_SECONDS);\nconst rep = { expired: [], expire_skipped: [], executed: [], execution_failed: [], execution_unknown: [], not_executed: [], underapproved: [], skipped: [], problems: [] };\nconst requesterNotes = [], opsNotes = [];\nconst listOf = (r) => (r.status === 200 && r.body && Array.isArray(r.body.approvals) ? r.body.approvals : null);\n\n// ---- 1. requests still pending after their deadline (the timer was lost, for example because n8n was down): auto-decline them\nif (C.RECONCILE_EXPIRE) {\n  const l = listOf(await call('GET', `${store}/approvals?status=pending&expired=true&limit=${max}`));\n  if (l === null) rep.problems.push('the approval store could not list expired requests');\n  else {\n    // do not trust the store's filtering: only a request that is really pending and really past its deadline is touched\n    const due = l.filter((x) => isObj(x) && idOk(x.action_id) && x.status === 'pending' && Date.parse(x.expires_at) <= Date.now()).slice(0, max);\n    for (const rec of due) {\n      const x = await call('POST', `${store}/approvals/${enc(rec.action_id)}/resolve`, { decision: 'timeout', resolved_by: 'system_timeout' });\n      if (x.status === 200 && x.body && x.body.claimed === true) {\n        rep.expired.push(rec.action_id);\n        requesterNotes.push({ kind: 'requester', to: rec.requested_by, text: fillMsg(MSG.requester_timeout, { action_type: rec.action_type, action_id: rec.action_id, responder: 'system_timeout', requested_by: rec.requested_by }) });\n      } else if (x.status === 409) rep.expire_skipped.push(rec.action_id);\n      else rep.problems.push(`could not auto-decline ${rec.action_id} (${why(x)})`);\n    }\n  }\n}\n\n// ---- 2. approved, but never run (n8n died between recording the decision and running the action)\nconst l2 = listOf(await call('GET', `${store}/approvals?status=approved&unexecuted=true&older_than_seconds=${staleSec}&limit=${max}`));\nif (l2 === null) rep.problems.push('the approval store could not list approved requests without an execution');\nelse {\n  const cand = l2.filter((x) => isObj(x) && idOk(x.action_id) && x.status === 'approved' && !x.execution && Date.now() - Date.parse(x.resolved_at) >= staleSec * 1000).slice(0, max);\n  for (const rec of cand) {\n    const rule = Object.prototype.hasOwnProperty.call(PL.by_action_type, rec.action_type) ? PL.by_action_type[rec.action_type] : PL.default;\n    const need = Math.max(1, Number(rec.required_approvals) || 1, Number(rule.required_approvals) || 1);   // never less than the policy says\n    const votes = Array.isArray(rec.approvals) ? new Set(rec.approvals.map((a) => String(a && a.by).toLowerCase())).size : 0;\n    if (need > 1 && votes < need) { rep.underapproved.push(rec.action_id); continue; }\n    if (!C.RECONCILE_EXECUTE) { rep.not_executed.push(rec.action_id); continue; }\n    // claim it (atomic) so two reconcile runs, or a run and a person, can never run the same action\n    const c = await call('POST', `${store}/approvals/${enc(rec.action_id)}/execution-claim`, { lease_seconds: staleSec });\n    const won = c.status === 200 && c.body && c.body.claimed === true;\n    if (!won || !isObj(c.body.record) || c.body.record.action_id !== rec.action_id || c.body.record.status !== 'approved' || c.body.record.execution) { rep.skipped.push(rec.action_id); continue; }\n    const r0 = c.body.record;\n    const all = Array.isArray(r0.approvals) && r0.approvals.length ? r0.approvals.map((a) => String(a.by)) : [String(r0.resolved_by)];\n    const ex = await call('POST', base(C.ACTION_EXECUTOR_API_URL) + '/execute', { action_id: r0.action_id, action_type: r0.action_type, details: r0.details, amount: r0.amount, approved_by: String(r0.resolved_by), approved_by_all: all, idempotency_key: 'approval:' + r0.action_id }, Number(C.EXECUTOR_TIMEOUT_MS));\n    const good = typeof ex.status === 'number' && ex.status >= 200 && ex.status < 300;\n    const unknown = typeof ex.status !== 'number';\n    const status = good ? 'executed' : unknown ? 'unknown' : 'failed';\n    const detail = good ? '' : unknown ? 'no response from the executor: ' + String(ex.error || 'timeout').slice(0, 160) : 'HTTP ' + ex.status;\n    const rr = await call('POST', `${store}/approvals/${enc(r0.action_id)}/execution`, { status, detail, via: 'reconcile' });\n    if (!(rr.status !== null && rr.status < 300)) rep.problems.push(`${r0.action_id}: the execution outcome could not be recorded in the approval store (${why(rr)})`);\n    if (good) {\n      rep.executed.push(r0.action_id);\n      requesterNotes.push({ kind: 'requester', to: r0.requested_by, text: fillMsg(MSG.requester_executed, { action_type: r0.action_type, action_id: r0.action_id, responder: all.length > 1 ? all.slice(0, -1).join(', ') + ' and ' + all[all.length - 1] : all[0], requested_by: r0.requested_by }) });\n    } else {\n      (unknown ? rep.execution_unknown : rep.execution_failed).push(r0.action_id);\n      requesterNotes.push({ kind: 'requester', to: r0.requested_by, text: unknown\n        ? `Your request \"${r0.action_type}\" (${r0.action_id}) was approved, but we did not get a response from the executor, so the result is unknown. Ops has been alerted.`\n        : `Your request \"${r0.action_type}\" (${r0.action_id}) was approved, but executing it failed (${detail}). Ops has been alerted.` });\n      opsNotes.push(unknown\n        ? `ATTENTION: approved action ${r0.action_id} (${r0.action_type}): executor gave NO response when reconcile re-ran it (${detail}). It may or may not have run. Idempotency key: approval:${r0.action_id}.`\n        : `ATTENTION: approved action ${r0.action_id} (${r0.action_type}) FAILED when reconcile re-ran it (${detail}). Idempotency key: approval:${r0.action_id}.`);\n    }\n  }\n}\nconst mins = Math.round(staleSec / 60);\nconst lines = [];\nif (rep.problems.length) lines.push('Reconcile problem: ' + rep.problems.join('; ') + '.');\nif (rep.expired.length) lines.push(`Reconcile auto-declined ${rep.expired.length} request(s) that were still pending after their deadline: ${rep.expired.join(', ')}.`);\nif (rep.executed.length) lines.push(`Reconcile ran ${rep.executed.length} approved action(s) that had never run: ${rep.executed.join(', ')}.`);\nif (rep.not_executed.length) lines.push(`${rep.not_executed.length} approved action(s) have no execution recorded after ${mins}+ minutes: ${rep.not_executed.join(', ')}. RECONCILE_EXECUTE is off, so nothing was run. Check them.`);\nif (rep.underapproved.length) lines.push(`ATTENTION: ${rep.underapproved.length} action(s) are marked approved with fewer approvals than the policy requires: ${rep.underapproved.join(', ')}. They were NOT executed.`);\nconst notifications = [...requesterNotes, ...(lines.length ? [{ kind: 'slack', text: lines.join(' ') }] : []), ...opsNotes.map((t) => ({ kind: 'slack', text: t }))];\nreturn [{ json: { ok: true, http_status: 200, response_body: { status: rep.problems.length ? 'incomplete' : 'ok', expire: C.RECONCILE_EXPIRE, execute: C.RECONCILE_EXECUTE, ...rep }, notifications } }];"
+      },
+      "id": "g-53",
+      "name": "Reconcile Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        300
+      ],
+      "notes": "THE RECONCILE JOB. (1) Auto-declines requests still pending after their deadline. (2) Finds approved requests that never ran: reports them, or (RECONCILE_EXECUTE=true) claims each one atomically and runs it once through the executor with the original idempotency key, then records the outcome. It re-checks everything the store returns, never runs a request with fewer approvals than the policy requires, and never touches requests that failed or have an unknown result (a person decides those)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-wr",
+              "leftValue": "={{ $('Mark Reconcile (api)').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-54",
+      "name": "Webhook Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ],
+      "notes": "A reply is only sent to API calls; a scheduled run just goes on to the notices."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-55",
+      "name": "Respond Reconcile",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2520,
+        300
+      ],
+      "notes": "The reply to an API reconcile call: 200 summary, 401, 403 or 500."
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst C = $('CONFIG').first().json;\nconst list = $input.first().json.notifications || [];\nconst out = [];\nfor (const n of list) {\n  if (n.kind === 'slack' && C.SLACK_WEBHOOK_URL) out.push({ json: { kind: 'slack', text: '[Approvals] ' + esc(n.text) } });\n  if (n.kind === 'requester' && C.NOTIFY_API_URL && n.to) out.push({ json: { kind: 'requester', to: n.to, text: n.text } });\n}\nreturn out;"
+      },
+      "id": "g-56",
+      "name": "Expand Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8680,
+        0
+      ],
+      "notes": "Runs AFTER the reply. Turns the notice list into one item per message. Slack text is escaped; Slack or notify are skipped if their URLs are blank."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-57",
+              "leftValue": "={{ $json.kind === 'slack' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-57",
+      "name": "Is Slack Notice?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-58",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9240,
+        0
+      ],
+      "notes": "Slack-compatible incoming webhook. A failed notice is ignored on purpose: it must not break the decision.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.NOTIFY_API_URL.replace(/\\/+$/, '') + '/send' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { to: $json.to, message: $json.text } }}"
+      },
+      "id": "g-59",
+      "name": "Notify Requester",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9240,
+        150
+      ],
+      "notes": "POST {NOTIFY_API_URL}/send {to, message}. A failed notice is ignored on purpose.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Human Approval Gate\n**Setup (about 10 minutes)**\n1. Run the backing services (a reference implementation is included: `node 05-human-approval-gate-mock-server.js`, port 4700): approval store, action executor, requester notifications, and a Slack stand-in.\n2. Open **CONFIG**: set `APPROVAL_STORE_API_URL`, `ACTION_EXECUTOR_API_URL`, optional `NOTIFY_API_URL` and `SLACK_WEBHOOK_URL`.\n3. **Lock it down before real use:** set `APPROVER_API_TOKEN` (API approvers send header `x-approver-token`), `SLACK_SIGNING_SECRET` (verifies Slack button clicks), `REQUEST_AUTH_TOKEN` (header `x-request-token`), and `ALLOWED_APPROVERS`. If you set none of them the approve endpoint is OPEN to anyone who can reach it.\n4. Activate. Request: `POST /webhook/approvals/request`. Decide: `POST /webhook/approvals/respond` (or Slack buttons).\n\n**Flow:** request -> store record (atomic) -> Slack prompt -> reply \"pending\" -> wait -> auto-decline if still pending. Decision -> authenticate -> atomic resolve -> reply -> run the action (once) -> record result -> notify.",
+        "height": 380,
+        "width": 760,
+        "color": 4
+      },
+      "id": "g-read-me-first",
+      "name": "Read Me First",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -560
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Approval Request": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Approval Response": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Mark Reconcile (api)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Reconcile (api)": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule: Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Mark Reconcile (schedule)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Reconcile (schedule)": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CONFIG": {
+      "main": [
+        [
+          {
+            "node": "Approval Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approval Policy": {
+      "main": [
+        [
+          {
+            "node": "Is Reconcile?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Reconcile?": {
+      "main": [
+        [
+          {
+            "node": "Plan Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Response Flow?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Valid?": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Webhook Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Run": {
+      "main": [
+        [
+          {
+            "node": "Webhook Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Run?": {
+      "main": [
+        [
+          {
+            "node": "Respond Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Response Flow?": {
+      "main": [
+        [
+          {
+            "node": "Parse Decision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Create Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Approval": {
+      "main": [
+        [
+          {
+            "node": "Create Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Verdict": {
+      "main": [
+        [
+          {
+            "node": "Created?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Created?": {
+      "main": [
+        [
+          {
+            "node": "Build Slack Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Early",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Slack Prompt": {
+      "main": [
+        [
+          {
+            "node": "Slack Configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Configured?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Join Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Prompt": {
+      "main": [
+        [
+          {
+            "node": "Join Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Join Prompt": {
+      "main": [
+        [
+          {
+            "node": "Prompt Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt Result": {
+      "main": [
+        [
+          {
+            "node": "Respond Pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Pending": {
+      "main": [
+        [
+          {
+            "node": "Prompt Undelivered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt Undelivered?": {
+      "main": [
+        [
+          {
+            "node": "Notify Requester (undelivered)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalation Planned?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Requester (undelivered)": {
+      "main": [
+        [
+          {
+            "node": "Escalation Planned?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Planned?": {
+      "main": [
+        [
+          {
+            "node": "Wait For Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait For Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait For Escalation": {
+      "main": [
+        [
+          {
+            "node": "Get Approval (escalation)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Approval (escalation)": {
+      "main": [
+        [
+          {
+            "node": "Escalation Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Check": {
+      "main": [
+        [
+          {
+            "node": "Still Pending?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still Pending?": {
+      "main": [
+        [
+          {
+            "node": "Any Escalation Notices?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Escalation Notices?": {
+      "main": [
+        [
+          {
+            "node": "Escalation Notices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait For Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Notices": {
+      "main": [
+        [
+          {
+            "node": "Send Escalation Notices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Escalation Notices": {
+      "main": [
+        [
+          {
+            "node": "Escalation Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Sent": {
+      "main": [
+        [
+          {
+            "node": "Wait For Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait For Decision": {
+      "main": [
+        [
+          {
+            "node": "Resolve Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Timeout": {
+      "main": [
+        [
+          {
+            "node": "Timeout Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Timeout Verdict": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Decision": {
+      "main": [
+        [
+          {
+            "node": "Slack Signature (HMAC)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Signature (HMAC)": {
+      "main": [
+        [
+          {
+            "node": "Authorize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorize": {
+      "main": [
+        [
+          {
+            "node": "Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Get Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Approval": {
+      "main": [
+        [
+          {
+            "node": "Check Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Approval": {
+      "main": [
+        [
+          {
+            "node": "Can Resolve?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can Resolve?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Approval": {
+      "main": [
+        [
+          {
+            "node": "Resolve Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Verdict": {
+      "main": [
+        [
+          {
+            "node": "Respond Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Decision": {
+      "main": [
+        [
+          {
+            "node": "Execute Action?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Action?": {
+      "main": [
+        [
+          {
+            "node": "Execute Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Action": {
+      "main": [
+        [
+          {
+            "node": "Execution Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execution Result": {
+      "main": [
+        [
+          {
+            "node": "Record Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Execution": {
+      "main": [
+        [
+          {
+            "node": "Execution Notices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execution Notices": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Notifications": {
+      "main": [
+        [
+          {
+            "node": "Is Slack Notice?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Slack Notice?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Requester",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Early": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
