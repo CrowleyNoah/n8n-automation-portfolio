@@ -226,6 +226,36 @@
               "name": "TTS_TIMEOUT_MS",
               "value": 20000,
               "type": "number"
+            },
+            {
+              "id": "cfg-34",
+              "name": "ASYNC_MODE",
+              "value": "off",
+              "type": "string"
+            },
+            {
+              "id": "cfg-35",
+              "name": "JOB_STORE_API_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-36",
+              "name": "JOB_LEASE_SECONDS",
+              "value": 300,
+              "type": "number"
+            },
+            {
+              "id": "cfg-37",
+              "name": "JOB_RESULT_MAX_BYTES",
+              "value": 1000000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-38",
+              "name": "ALERT_WEBHOOK_URL",
+              "value": "",
+              "type": "string"
             }
           ]
         },
@@ -251,21 +281,21 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        840,
         0
       ],
       "notes": "EDIT ME for what callers hear and what the agent is told: fixed sentences per language, shortcut phrases answered without the agent, pronunciation fixes for speech, fixed context sent to the agent. Data only; checked on every request. Audio checks, confidence/silence/language judgement and saving rules cannot be changed here."
     },
     {
       "parameters": {
-        "jsCode": "const C = $('CONFIG').first().json;\nconst req = $('Voice Intake Webhook').first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) } } }];\n\nif (C.VOICE_AUTH_TOKEN && (req.headers || {})['x-voice-token'] !== C.VOICE_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity\nconst bad = [];\nfor (const k of ['SESSION_API_URL', 'STT_API_URL', 'AGENT_API_URL', 'TTS_API_URL']) if (!/^https?:\\/\\//.test(C[k] || '')) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.QA_ARCHIVE_API_URL && !/^https?:\\/\\//.test(C.QA_ARCHIVE_API_URL)) bad.push('CONFIG.QA_ARCHIVE_API_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'STT_HEADERS_JSON', 'AGENT_HEADERS_JSON', 'TTS_HEADERS_JSON']) { try { if (!isObj(JSON.parse(C[k] || '{}'))) throw 0; } catch (e) { bad.push(`CONFIG.${k} must be a JSON object`); } }\nconst arr = (k) => { try { const a = JSON.parse(C[k]); if (!Array.isArray(a) || !a.length) throw 0; return a; } catch (e) { bad.push(`CONFIG.${k} must be a non-empty JSON array`); return []; } };\nconst langs = arr('SUPPORTED_LANGUAGES_JSON'); const formats = arr('ALLOWED_FORMATS_JSON');\nif (formats.some((f) => !['wav', 'mp3', 'ogg', 'webm'].includes(f))) bad.push('CONFIG.ALLOWED_FORMATS_JSON may only contain wav, mp3, ogg, webm');\nif (langs.length && !langs.includes(C.DEFAULT_LANGUAGE)) bad.push('CONFIG.DEFAULT_LANGUAGE must be one of SUPPORTED_LANGUAGES_JSON');\ntry { JSON.parse(C.NON_SPEECH_PATTERNS_JSON).forEach((p) => new RegExp(p, 'i')); } catch (e) { bad.push('CONFIG.NON_SPEECH_PATTERNS_JSON must be a JSON array of valid regular expressions'); }\nconst num = (k) => Number(C[k]);\nfor (const k of ['MAX_AUDIO_BYTES', 'MAX_DURATION_SECONDS', 'MAX_HISTORY_TURNS', 'TTS_MAX_CHARS', 'MAX_TTS_AUDIO_BYTES', 'REQUEST_TIMEOUT_MS', 'STT_TIMEOUT_MS', 'AGENT_TIMEOUT_MS', 'TTS_TIMEOUT_MS']) if (!(num(k) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (!(num('MIN_DURATION_SECONDS') >= 0 && num('MIN_DURATION_SECONDS') < num('MAX_DURATION_SECONDS'))) bad.push('CONFIG.MIN_DURATION_SECONDS must be >= 0 and below MAX_DURATION_SECONDS');\nif (!(num('NO_SPEECH_THRESHOLD') > 0 && num('NO_SPEECH_THRESHOLD') <= 1)) bad.push('CONFIG.NO_SPEECH_THRESHOLD must be between 0 and 1');\nif (!(num('MIN_CONFIDENCE_LOGPROB') <= 0)) bad.push('CONFIG.MIN_CONFIDENCE_LOGPROB must be 0 or negative (average log-probability, e.g. -1.0)');\nif (!(Number.isInteger(num('DEGRADED_STATUS_CODE')) && num('DEGRADED_STATUS_CODE') >= 200 && num('DEGRADED_STATUS_CODE') <= 599)) bad.push('CONFIG.DEGRADED_STATUS_CODE must be an HTTP status between 200 and 599');\nfor (const k of ['MSG_STT_FAILED', 'MSG_CLARIFY', 'MSG_UNSUPPORTED_LANGUAGE', 'MSG_AGENT_FAILED']) if (!String(C[k] || '').trim()) bad.push(`CONFIG.${k} must not be empty (it is what the caller hears)`);\n// ---- the Voice Rules node\n{\n  const R = $('Voice Rules').first().json.rules;\n  const rb = (m) => bad.push('Rules: ' + m);\n  const str = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;\n  const LANG = /^[a-z]{2}$/;\n  const langMap = (v, allowDefault) => isObj(v) && Object.keys(v).length >= 1 && Object.keys(v).length <= 30 && Object.entries(v).every(([k, t]) => (LANG.test(k) || (allowDefault && k === 'default')) && str(t, 1, 500));\n  if (!R._is_obj) rb('rules must be an object');\n  else {\n    for (const k of R._raw_keys) if (!['messages', 'shortcuts', 'speech_replacements', 'agent_context'].includes(k)) rb(`${k} is not a known setting (messages, shortcuts, speech_replacements, agent_context)`);\n    if (!isObj(R.messages)) rb('messages must be an object');\n    else for (const [k, v] of Object.entries(R.messages)) {\n      if (!['stt_failed', 'clarify', 'unsupported_language', 'agent_failed'].includes(k)) rb(`messages.${k} is not a known message (stt_failed, clarify, unsupported_language, agent_failed)`);\n      else if (!langMap(v)) rb(`messages.${k} must be an object of 2-letter language code -> text (1 to 500 characters)`);\n    }\n    if (!Array.isArray(R.shortcuts) || R.shortcuts.length > 20) rb('shortcuts must be a list of at most 20 shortcuts');\n    else {\n      const names = new Set();\n      R.shortcuts.forEach((s, i) => {\n        const w = `shortcuts[${i}]`;\n        if (!isObj(s)) { rb(`${w} must be an object`); return; }\n        for (const k of Object.keys(s)) if (!['name', 'match_any', 'reply'].includes(k)) rb(`${w}.${k} is not a known setting (name, match_any, reply)`);\n        if (typeof s.name !== 'string' || !/^[a-z][a-z0-9_]{0,39}$/.test(s.name)) rb(`${w}.name must be lower-case letters, digits and _ (1 to 40 characters)`);\n        else if (names.has(s.name)) rb(`${w}.name \"${s.name}\" is used twice`); else names.add(s.name);\n        if (!(Array.isArray(s.match_any) && s.match_any.length >= 1 && s.match_any.length <= 30 && s.match_any.every((x) => str(x, 2, 100)))) rb(`${w}.match_any must be a list of 1 to 30 phrases of 2 to 100 characters`);\n        if (typeof s.reply === 'string') { if (!str(s.reply, 1, 500)) rb(`${w}.reply must be 1 to 500 characters`); }\n        else if (!(langMap(s.reply, true) && typeof s.reply.default === 'string')) rb(`${w}.reply must be text, or an object of language code -> text that includes \"default\"`);\n      });\n    }\n    if (!Array.isArray(R.speech_replacements) || R.speech_replacements.length > 50 || !R.speech_replacements.every((x) => isObj(x) && Object.keys(x).every((k) => ['from', 'to'].includes(k)) && str(x.from, 1, 50) && str(x.to, 0, 100))) rb('speech_replacements must be a list of at most 50 entries { from: 1 to 50 characters, to: up to 100 characters }');\n    if (!isObj(R.agent_context) || Object.keys(R.agent_context).length > 20 || !Object.entries(R.agent_context).every(([k, v]) => /^[a-z][a-z0-9_]{0,39}$/.test(k) && (typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || str(v, 0, 200)))) rb('agent_context must be an object of at most 20 entries: lower-case name -> text (up to 200 characters), number or true/false');\n  }\n}\nif (bad.length) return reject(500, 'voice_misconfigured', bad);\n\n// ---- request shape\nif (!isObj(req.body)) return reject(400, 'validation_failed', ['body must be a JSON object']);\nconst b = req.body;\nconst errors = [];\nconst fmt = typeof b.audio_format === 'string' ? b.audio_format.trim().toLowerCase() : '';\nif (!formats.includes(fmt)) errors.push(`audio_format must be one of: ${formats.join(', ')}`);\n\nlet b64 = typeof b.audio_base64 === 'string' ? b.audio_base64.replace(/^data:[^;,]*;base64,/i, '').replace(/\\s+/g, '') : '';\nlet buf = null;\nif (!b64) errors.push('audio_base64 is required (base64-encoded audio)');\nelse if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4 !== 0) errors.push('audio_base64 is not valid base64');\nelse {\n  buf = Buffer.from(b64, 'base64');\n  if (buf.length < 64) errors.push('audio is too small to contain speech');\n  else if (buf.length > num('MAX_AUDIO_BYTES')) errors.push(`audio exceeds the ${num('MAX_AUDIO_BYTES')} byte limit`);\n  else if (C.CHECK_AUDIO_SIGNATURE === true && formats.includes(fmt)) {\n    const h = buf.subarray(0, 12); const s = (a, n) => h.subarray(a, a + n).toString('latin1');\n    const okSig = { wav: s(0, 4) === 'RIFF' && s(8, 4) === 'WAVE', mp3: s(0, 3) === 'ID3' || (h[0] === 0xff && (h[1] & 0xe0) === 0xe0), ogg: s(0, 4) === 'OggS', webm: h[0] === 0x1a && h[1] === 0x45 && h[2] === 0xdf && h[3] === 0xa3 }[fmt];\n    if (!okSig) errors.push(`the audio bytes do not look like ${fmt} (wrong or missing file signature)`);\n  }\n}\nlet duration = null;\nif (b.duration_seconds !== undefined && b.duration_seconds !== null) {\n  if (typeof b.duration_seconds !== 'number' || !Number.isFinite(b.duration_seconds)) errors.push('duration_seconds must be a number');\n  else if (b.duration_seconds < num('MIN_DURATION_SECONDS')) errors.push(`audio is too short (< ${num('MIN_DURATION_SECONDS')}s) to contain speech`);\n  else if (b.duration_seconds > num('MAX_DURATION_SECONDS')) errors.push(`audio exceeds ${num('MAX_DURATION_SECONDS')}s; split it into shorter clips`);\n  else duration = b.duration_seconds;\n}\nconst idField = (k) => { const v = b[k]; if (v === undefined || v === null || v === '') return null; if (typeof v !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(v)) { errors.push(`${k} must be 1-128 characters: letters, digits and . _ : -`); return null; } return v; };\nconst session_id = idField('session_id'), turn_id = idField('turn_id');\nif (errors.length) return reject(400, 'validation_failed', errors);\n\nreturn [{ json: { ok: true, audio_b64: b64, audio_format: fmt, audio_bytes: buf.length, duration_seconds: duration, session_id, turn_id } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst req = $('Voice Intake Webhook').first().json;\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) } } }];\n\nif (C.VOICE_AUTH_TOKEN && (req.headers || {})['x-voice-token'] !== C.VOICE_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity\nconst bad = [];\nfor (const k of ['SESSION_API_URL', 'STT_API_URL', 'AGENT_API_URL', 'TTS_API_URL']) if (!/^https?:\\/\\//.test(C[k] || '')) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.QA_ARCHIVE_API_URL && !/^https?:\\/\\//.test(C.QA_ARCHIVE_API_URL)) bad.push('CONFIG.QA_ARCHIVE_API_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'STT_HEADERS_JSON', 'AGENT_HEADERS_JSON', 'TTS_HEADERS_JSON']) { try { if (!isObj(JSON.parse(C[k] || '{}'))) throw 0; } catch (e) { bad.push(`CONFIG.${k} must be a JSON object`); } }\nconst arr = (k) => { try { const a = JSON.parse(C[k]); if (!Array.isArray(a) || !a.length) throw 0; return a; } catch (e) { bad.push(`CONFIG.${k} must be a non-empty JSON array`); return []; } };\nconst langs = arr('SUPPORTED_LANGUAGES_JSON'); const formats = arr('ALLOWED_FORMATS_JSON');\nif (formats.some((f) => !['wav', 'mp3', 'ogg', 'webm'].includes(f))) bad.push('CONFIG.ALLOWED_FORMATS_JSON may only contain wav, mp3, ogg, webm');\nif (langs.length && !langs.includes(C.DEFAULT_LANGUAGE)) bad.push('CONFIG.DEFAULT_LANGUAGE must be one of SUPPORTED_LANGUAGES_JSON');\ntry { JSON.parse(C.NON_SPEECH_PATTERNS_JSON).forEach((p) => new RegExp(p, 'i')); } catch (e) { bad.push('CONFIG.NON_SPEECH_PATTERNS_JSON must be a JSON array of valid regular expressions'); }\nconst num = (k) => Number(C[k]);\nfor (const k of ['MAX_AUDIO_BYTES', 'MAX_DURATION_SECONDS', 'MAX_HISTORY_TURNS', 'TTS_MAX_CHARS', 'MAX_TTS_AUDIO_BYTES', 'REQUEST_TIMEOUT_MS', 'STT_TIMEOUT_MS', 'AGENT_TIMEOUT_MS', 'TTS_TIMEOUT_MS']) if (!(num(k) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nif (!(num('MIN_DURATION_SECONDS') >= 0 && num('MIN_DURATION_SECONDS') < num('MAX_DURATION_SECONDS'))) bad.push('CONFIG.MIN_DURATION_SECONDS must be >= 0 and below MAX_DURATION_SECONDS');\nif (!(num('NO_SPEECH_THRESHOLD') > 0 && num('NO_SPEECH_THRESHOLD') <= 1)) bad.push('CONFIG.NO_SPEECH_THRESHOLD must be between 0 and 1');\nif (!(num('MIN_CONFIDENCE_LOGPROB') <= 0)) bad.push('CONFIG.MIN_CONFIDENCE_LOGPROB must be 0 or negative (average log-probability, e.g. -1.0)');\nif (!(Number.isInteger(num('DEGRADED_STATUS_CODE')) && num('DEGRADED_STATUS_CODE') >= 200 && num('DEGRADED_STATUS_CODE') <= 599)) bad.push('CONFIG.DEGRADED_STATUS_CODE must be an HTTP status between 200 and 599');\nfor (const k of ['MSG_STT_FAILED', 'MSG_CLARIFY', 'MSG_UNSUPPORTED_LANGUAGE', 'MSG_AGENT_FAILED']) if (!String(C[k] || '').trim()) bad.push(`CONFIG.${k} must not be empty (it is what the caller hears)`);\n// ---- the Voice Rules node\n{\n  const R = $('Voice Rules').first().json.rules;\n  const rb = (m) => bad.push('Rules: ' + m);\n  const str = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;\n  const LANG = /^[a-z]{2}$/;\n  const langMap = (v, allowDefault) => isObj(v) && Object.keys(v).length >= 1 && Object.keys(v).length <= 30 && Object.entries(v).every(([k, t]) => (LANG.test(k) || (allowDefault && k === 'default')) && str(t, 1, 500));\n  if (!R._is_obj) rb('rules must be an object');\n  else {\n    for (const k of R._raw_keys) if (!['messages', 'shortcuts', 'speech_replacements', 'agent_context'].includes(k)) rb(`${k} is not a known setting (messages, shortcuts, speech_replacements, agent_context)`);\n    if (!isObj(R.messages)) rb('messages must be an object');\n    else for (const [k, v] of Object.entries(R.messages)) {\n      if (!['stt_failed', 'clarify', 'unsupported_language', 'agent_failed'].includes(k)) rb(`messages.${k} is not a known message (stt_failed, clarify, unsupported_language, agent_failed)`);\n      else if (!langMap(v)) rb(`messages.${k} must be an object of 2-letter language code -> text (1 to 500 characters)`);\n    }\n    if (!Array.isArray(R.shortcuts) || R.shortcuts.length > 20) rb('shortcuts must be a list of at most 20 shortcuts');\n    else {\n      const names = new Set();\n      R.shortcuts.forEach((s, i) => {\n        const w = `shortcuts[${i}]`;\n        if (!isObj(s)) { rb(`${w} must be an object`); return; }\n        for (const k of Object.keys(s)) if (!['name', 'match_any', 'reply'].includes(k)) rb(`${w}.${k} is not a known setting (name, match_any, reply)`);\n        if (typeof s.name !== 'string' || !/^[a-z][a-z0-9_]{0,39}$/.test(s.name)) rb(`${w}.name must be lower-case letters, digits and _ (1 to 40 characters)`);\n        else if (names.has(s.name)) rb(`${w}.name \"${s.name}\" is used twice`); else names.add(s.name);\n        if (!(Array.isArray(s.match_any) && s.match_any.length >= 1 && s.match_any.length <= 30 && s.match_any.every((x) => str(x, 2, 100)))) rb(`${w}.match_any must be a list of 1 to 30 phrases of 2 to 100 characters`);\n        if (typeof s.reply === 'string') { if (!str(s.reply, 1, 500)) rb(`${w}.reply must be 1 to 500 characters`); }\n        else if (!(langMap(s.reply, true) && typeof s.reply.default === 'string')) rb(`${w}.reply must be text, or an object of language code -> text that includes \"default\"`);\n      });\n    }\n    if (!Array.isArray(R.speech_replacements) || R.speech_replacements.length > 50 || !R.speech_replacements.every((x) => isObj(x) && Object.keys(x).every((k) => ['from', 'to'].includes(k)) && str(x.from, 1, 50) && str(x.to, 0, 100))) rb('speech_replacements must be a list of at most 50 entries { from: 1 to 50 characters, to: up to 100 characters }');\n    if (!isObj(R.agent_context) || Object.keys(R.agent_context).length > 20 || !Object.entries(R.agent_context).every(([k, v]) => /^[a-z][a-z0-9_]{0,39}$/.test(k) && (typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || str(v, 0, 200)))) rb('agent_context must be an object of at most 20 entries: lower-case name -> text (up to 200 characters), number or true/false');\n  }\n}\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nif (!['off', 'optional', 'always'].includes(C.ASYNC_MODE)) bad.push('CONFIG.ASYNC_MODE must be \"off\", \"optional\" or \"always\"');\nelse if (C.ASYNC_MODE !== 'off' && !url(C.JOB_STORE_API_URL)) bad.push('CONFIG.JOB_STORE_API_URL must start with http:// or https:// when ASYNC_MODE is not \"off\"');\nif (!(Number(C.JOB_LEASE_SECONDS) > 0)) bad.push('CONFIG.JOB_LEASE_SECONDS must be a number > 0');\nif (!(Number(C.JOB_RESULT_MAX_BYTES) >= 100)) bad.push('CONFIG.JOB_RESULT_MAX_BYTES must be a number of at least 100');\nif (C.ALERT_WEBHOOK_URL && !url(C.ALERT_WEBHOOK_URL)) bad.push('CONFIG.ALERT_WEBHOOK_URL must be blank or start with http(s)://');\nif (C.ASYNC_MODE !== 'off' && Number(C.JOB_LEASE_SECONDS) > 0 && Number(C.JOB_LEASE_SECONDS) < (2 * num('STT_TIMEOUT_MS') + num('AGENT_TIMEOUT_MS') + 2 * num('TTS_TIMEOUT_MS')) / 1000) bad.push('CONFIG.JOB_LEASE_SECONDS must not be shorter than the slowest possible run (2 x STT_TIMEOUT_MS + AGENT_TIMEOUT_MS + 2 x TTS_TIMEOUT_MS, in seconds)');\nif (bad.length) return reject(500, 'voice_misconfigured', bad);\n\n// ---- request shape\nif (!isObj(req.body)) return reject(400, 'validation_failed', ['body must be a JSON object']);\nconst b = req.body;\nconst errors = [];\nconst fmt = typeof b.audio_format === 'string' ? b.audio_format.trim().toLowerCase() : '';\nif (!formats.includes(fmt)) errors.push(`audio_format must be one of: ${formats.join(', ')}`);\n\nlet b64 = typeof b.audio_base64 === 'string' ? b.audio_base64.replace(/^data:[^;,]*;base64,/i, '').replace(/\\s+/g, '') : '';\nlet buf = null;\nif (!b64) errors.push('audio_base64 is required (base64-encoded audio)');\nelse if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4 !== 0) errors.push('audio_base64 is not valid base64');\nelse {\n  buf = Buffer.from(b64, 'base64');\n  if (buf.length < 64) errors.push('audio is too small to contain speech');\n  else if (buf.length > num('MAX_AUDIO_BYTES')) errors.push(`audio exceeds the ${num('MAX_AUDIO_BYTES')} byte limit`);\n  else if (C.CHECK_AUDIO_SIGNATURE === true && formats.includes(fmt)) {\n    const h = buf.subarray(0, 12); const s = (a, n) => h.subarray(a, a + n).toString('latin1');\n    const okSig = { wav: s(0, 4) === 'RIFF' && s(8, 4) === 'WAVE', mp3: s(0, 3) === 'ID3' || (h[0] === 0xff && (h[1] & 0xe0) === 0xe0), ogg: s(0, 4) === 'OggS', webm: h[0] === 0x1a && h[1] === 0x45 && h[2] === 0xdf && h[3] === 0xa3 }[fmt];\n    if (!okSig) errors.push(`the audio bytes do not look like ${fmt} (wrong or missing file signature)`);\n  }\n}\nlet duration = null;\nif (b.duration_seconds !== undefined && b.duration_seconds !== null) {\n  if (typeof b.duration_seconds !== 'number' || !Number.isFinite(b.duration_seconds)) errors.push('duration_seconds must be a number');\n  else if (b.duration_seconds < num('MIN_DURATION_SECONDS')) errors.push(`audio is too short (< ${num('MIN_DURATION_SECONDS')}s) to contain speech`);\n  else if (b.duration_seconds > num('MAX_DURATION_SECONDS')) errors.push(`audio exceeds ${num('MAX_DURATION_SECONDS')}s; split it into shorter clips`);\n  else duration = b.duration_seconds;\n}\nconst idField = (k) => { const v = b[k]; if (v === undefined || v === null || v === '') return null; if (typeof v !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(v)) { errors.push(`${k} must be 1-128 characters: letters, digits and . _ : -`); return null; } return v; };\nconst session_id = idField('session_id'), turn_id = idField('turn_id');\nconst inp = req;\nconst asyncAsked = String((inp.headers || {}).prefer || '').toLowerCase().split(',').some((s) => s.split(';')[0].trim() === 'respond-async') || ['true', '1'].includes(String((inp.query || {}).async || '').toLowerCase());\nconst asyncWanted = C.ASYNC_MODE === 'always' || (C.ASYNC_MODE === 'optional' && asyncAsked);\nlet jobKey = '';\nif (asyncWanted) {\n  const ik = (inp.headers || {})['idempotency-key'];\n  if (ik !== undefined) { if (typeof ik !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(ik.trim())) errors.push('idempotency-key header must be 1-128 characters: letters, digits and . _ : -'); else jobKey = ik.trim(); }\n}\nconst asyncInfo = { wanted: asyncWanted, key: jobKey || null };\nif (errors.length) return reject(400, 'validation_failed', errors);\n\nreturn [{ json: { ok: true, audio_b64: b64, audio_format: fmt, audio_bytes: buf.length, duration_seconds: duration, session_id, turn_id, async: asyncInfo } }];"
       },
       "id": "g-3",
       "name": "Validate Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
+        1120,
         0
       ],
       "notes": "Auth, CONFIG sanity and request shape. The audio is decoded and its file signature checked against the declared format, so garbage never reaches the speech-to-text service."
@@ -299,7 +329,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1120,
+        1400,
         0
       ]
     },
@@ -332,7 +362,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1400,
+        3640,
         0
       ]
     },
@@ -358,7 +388,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1680,
+        3920,
         0
       ],
       "notes": "200 {history:[{role,text}]} = continue the conversation. 404 = expired or unknown, start fresh. Anything else = the store is having trouble: carry on without history instead of failing the call.",
@@ -373,7 +403,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
+        4200,
         0
       ],
       "notes": "existing | expired (unknown or expired id: gets a fresh server-generated id, never reuses the caller's) | unavailable (store down: keep the caller's id, no history, nothing saved)."
@@ -407,7 +437,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        2240,
+        4480,
         0
       ]
     },
@@ -422,7 +452,7 @@
       "type": "n8n-nodes-base.crypto",
       "typeVersion": 1,
       "position": [
-        2520,
+        4760,
         0
       ],
       "notes": "Session ids come from n8n's Crypto node (a secure random UUID). They are the only thing protecting a conversation's history, so they must not be guessable. (A Code node cannot use `crypto` in current n8n.)"
@@ -436,7 +466,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2800,
+        5040,
         0
       ]
     },
@@ -449,7 +479,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3080,
+        5320,
         0
       ],
       "notes": "One place that holds the session for this turn: existing, new or unavailable. Every later node reads it by name."
@@ -463,7 +493,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3360,
+        5600,
         0
       ],
       "notes": "Builds a proper n8n binary item with the platform helper (a hand-made {data: base64} object is not portable across n8n binary storage modes)."
@@ -504,7 +534,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3640,
+        5880,
         0
       ],
       "notes": "Multipart upload of the audio (field \"file\") plus \"language\". Deliberately NOT neverError: a 5xx throws so retryOnFail really retries (2 tries); after that the error arrives as data and becomes the spoken apology.",
@@ -522,7 +552,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3920,
+        6160,
         0
       ],
       "notes": "stt_failed | silent | low_confidence | unsupported_language | proceed. Confidence is judged only when the service reports it (the old code treated \"no segments\" as the worst possible confidence, so a Whisper without segments could never get an answer through). Language names and codes (English, en-US) are normalised."
@@ -566,7 +596,7 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        4200,
+        6440,
         0
       ]
     },
@@ -579,7 +609,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4480,
+        6720,
         0
       ],
       "notes": "The fixed things the caller hears when we should not or cannot call the agent. Wording is in CONFIG. None of these are saved to the conversation history."
@@ -593,7 +623,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4480,
+        6720,
         150
       ],
       "notes": "Runs only for a transcript that passed every check (so silence, low confidence and unsupported languages are never shortcut). A match from the Voice Rules shortcuts answers without calling the agent, and is not saved to the conversation."
@@ -627,7 +657,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        4760,
+        7000,
         0
       ]
     },
@@ -640,7 +670,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5040,
+        7280,
         0
       ]
     },
@@ -653,7 +683,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5040,
+        7280,
         150
       ],
       "notes": "Sends only the most recent MAX_HISTORY_TURNS turns, so a long conversation cannot grow the request forever."
@@ -684,7 +714,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5320,
+        7560,
         0
       ],
       "notes": "A real JSON body (the old node sent the history array as form text, \"[object Object]\"). No automatic retry: agents can have side effects.",
@@ -699,7 +729,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5600,
+        7840,
         0
       ],
       "notes": "An empty reply is a failure too: speaking nothing (or an empty string to the TTS engine) is not an answer."
@@ -733,7 +763,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        5880,
+        8120,
         0
       ]
     },
@@ -766,7 +796,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        6160,
+        8400,
         0
       ]
     },
@@ -796,7 +826,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        6440,
+        8680,
         0
       ],
       "notes": "Only a real, successful exchange is written to history. Creates the session if it is new. turn_id (optional, from the client) lets the store ignore a retried upload of the same turn.",
@@ -811,7 +841,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        6440,
+        8680,
         150
       ]
     },
@@ -824,7 +854,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        6720,
+        8960,
         0
       ],
       "notes": "If the turn could not be saved the caller still gets the answer, with a warning: the next turn will simply lack this exchange."
@@ -838,7 +868,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7000,
+        9240,
         0
       ],
       "notes": "The spoken text respects the TTS engine's own limit, cut at a sentence (or word) boundary, and nothing extra is read aloud. The full text always goes back in the response."
@@ -872,7 +902,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        7280,
+        9520,
         0
       ]
     },
@@ -902,7 +932,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        7560,
+        9800,
         0
       ],
       "notes": "Not neverError, so a 5xx throws and retryOnFail retries (2 tries). If it still fails the caller gets the text without audio.",
@@ -920,7 +950,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7840,
+        10080,
         0
       ],
       "notes": "Reads the synthesized audio with the platform helper, which works whatever binary storage mode n8n uses (reading $binary.data.data directly is not portable across modes). Rejects an empty, oversized or non-audio response."
@@ -938,21 +968,21 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        8120,
+        10640,
         0
       ],
       "notes": "The single reply node. Validation errors, canned replies, failures and answers all build {http_status, response_body} and end here."
     },
     {
       "parameters": {
-        "jsCode": "const C = $('CONFIG').first().json;\nconst qa = $input.first().json.qa;\nif (!C.QA_ARCHIVE_API_URL || !qa) return [];\nreturn [{ json: qa }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nlet qa = $input.first().json.qa;\nif (!qa) { try { qa = $('Build Response').first().json.qa; } catch (e) { qa = null; } }   // async: the saved-job item has no qa, read it from the reply builder\nif (!C.QA_ARCHIVE_API_URL || !qa) return [];\nreturn [{ json: qa }];"
       },
       "id": "g-33",
       "name": "Expand QA Archive",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        8400,
+        10920,
         0
       ],
       "notes": "Runs AFTER the reply. Blank QA_ARCHIVE_API_URL = no archiving (voice transcripts are personal data, so the default is off)."
@@ -983,7 +1013,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        8680,
+        11200,
         0
       ],
       "notes": "Best effort, after the reply: a slow or dead archive can never delay or break the caller's answer.",
@@ -991,7 +1021,449 @@
     },
     {
       "parameters": {
-        "content": "## Voice Intake Pipeline\n**Setup (about 10 minutes)**\n1. Run the services (a reference implementation is included: `node 08-voice-intake-pipeline-mock-server.js`, port 4400): speech-to-text, an agent, text-to-speech, a session store.\n2. Open **CONFIG**: set `SESSION_API_URL`, `STT_API_URL`, `AGENT_API_URL`, `TTS_API_URL` (the last three are full endpoint URLs). Optional: `VOICE_AUTH_TOKEN`, `QA_ARCHIVE_API_URL`.\n3. Activate, then `POST /webhook/voice/intake` with `{audio_base64, audio_format}`.\n\n**Each turn:** validate (decode + check the file signature) -> session -> transcribe -> judge the transcript -> agent (or a fixed reply) -> save the turn -> speak -> reply -> archive.\n\n\"I couldn't understand you\" is a normal outcome, not an error: silence, low confidence and unsupported languages get a spoken clarification and never reach the agent.",
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-35",
+              "leftValue": "={{ $json.async.wanted === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-35",
+      "name": "Async Requested?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "notes": "Only when ASYNC_MODE allows it AND the caller asked (Prefer: respond-async, or ?async=true; ASYNC_MODE=always means every request). No -> the normal synchronous flow, untouched."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.JOB_STORE_API_URL.replace(/\\/+$/, '') + '/jobs' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { kind: 'voice', key: $json.async.key, lease_seconds: Number($('CONFIG').first().json.JOB_LEASE_SECONDS) } }}"
+      },
+      "id": "g-36",
+      "name": "Create Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        0
+      ],
+      "notes": "POST /jobs {kind, key, lease_seconds} -> 201 new job {id,...} | 200 {existing:true,...} when this key already has a live or finished job. The STORE makes the (unguessable) id.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nconst idOk = b && typeof b.id === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(b.id);\nconst statusUrl = (id) => String($('Voice Intake Webhook').first().json.webhookUrl || '').replace(/\\/+$/, '') + '/jobs?job_id=' + encodeURIComponent(id);\nif (!idOk || !(r.statusCode === 201 || (r.statusCode === 200 && b.existing === true))) return [{ json: { ok: false, http_status: 503, response_body: { error: 'job_store_unavailable', message: 'The job could not be created, so nothing was started. Try again shortly.', retry: true } } }];\nif (b.existing === true) return [{ json: { ok: false, http_status: 200, response_body: { job_id: b.id, state: b.state, existing: true, status_url: statusUrl(b.id) } } }];\nreturn [{ json: { ok: true, job: { id: b.id, status_url: statusUrl(b.id) } } }];"
+      },
+      "id": "g-37",
+      "name": "Job Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "Created -> accepted. Already exists -> 200 with that job (nothing is started twice). Job store down or odd answer -> 503 and NOTHING started."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-38",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-38",
+      "name": "Job Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { job_id: $json.job.id, state: \"queued\", status_url: $json.job.status_url, retry_after_seconds: 2 } }}",
+        "options": {
+          "responseCode": 202,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Location",
+                "value": "={{ $json.job.status_url }}"
+              },
+              {
+                "name": "Retry-After",
+                "value": "2"
+              }
+            ]
+          }
+        }
+      },
+      "id": "g-39",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2800,
+        0
+      ],
+      "notes": "The coat-check ticket: 202 with the job id and where to ask, sent straight away. The work carries on after this reply."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CONFIG').first().json.JOB_STORE_API_URL.replace(/\\/+$/, '') + '/jobs/' + encodeURIComponent($json.job.id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { state: 'running', lease_seconds: Number($('CONFIG').first().json.JOB_LEASE_SECONDS) } }}"
+      },
+      "id": "g-40",
+      "name": "Mark Running",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        0
+      ],
+      "notes": "PATCH /jobs/{id} {state:\"running\", lease_seconds}. Best effort: if it fails the job stays queued and the work still runs.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-42",
+              "leftValue": "={{ $('Validate Request').first().json.async.wanted === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-42",
+      "name": "Async Job? (final)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        10360,
+        0
+      ],
+      "notes": "The work finished. Async: the reply is saved as the job result. Sync: it is sent to the caller as before."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst inp = $input.first().json;\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst job = $('Job Verdict').first().json.job;\nconst ident = String('session ' + ($('Session State').first().json.session_id || 'none'));\nconst body = JSON.parse(JSON.stringify(inp.response_body === undefined ? null : inp.response_body));\nconst status = Number(inp.http_status);\nconst notes = (inp.notifications || []).slice();\nconst max = Number(C.JOB_RESULT_MAX_BYTES);\nconst size = (o) => Buffer.byteLength(JSON.stringify(o));\nlet result = { http_status: status, body };\nlet state = status >= 200 && status < 300 ? 'succeeded' : 'failed';\nconst dropped = [];\nif (size(result) > max && body && typeof body === 'object') {\n  if (body.response_audio_base64) { body.response_audio_base64 = null; body.response_audio_mime = null; body.has_audio = false; body.warnings = [...(body.warnings || []), 'audio_omitted_job_result_too_large']; dropped.push('audio'); }\n  result = { http_status: status, body };\n}\nif (size(result) > max) { state = 'failed'; result = { http_status: 500, body: { error: 'job_result_too_large', message: `The result is larger than JOB_RESULT_MAX_BYTES (${max}).`, retry: false } }; dropped.length = 0; notes.push({ text: `Job ${job.id} (${ident}) finished but its result is larger than JOB_RESULT_MAX_BYTES, so the job was saved as failed (job_result_too_large).` }); }\nconst headers = JSON.parse(C.SERVICE_HEADERS_JSON || '{}');\nconst patch = async () => {\n  try {\n    const r = await this.helpers.httpRequest({ method: 'PATCH', url: String(C.JOB_STORE_API_URL).replace(/\\/+$/, '') + '/jobs/' + encodeURIComponent(job.id), body: { state, result, ...(dropped.length ? { result_trimmed: dropped } : {}) }, json: true, headers, timeout: Number(C.REQUEST_TIMEOUT_MS), returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return r.statusCode;\n  } catch (e) { return null; }\n};\nlet code = null;\nfor (let i = 0; i < 3; i++) {\n  code = await patch();\n  if ((code >= 200 && code < 300) || code === 409) break;\n  if (code !== null && code < 500 && code !== 429 && code !== 408) break;\n  await sleep(300 * (i + 1));\n}\nif (!((code >= 200 && code < 300) || code === 409)) notes.push({ text: `Job ${job.id} (${ident}) finished (HTTP ${status}) but its result could NOT be saved to the job store (${code === null ? 'no response' : 'HTTP ' + code}). The caller will see the job as lost once its lease runs out.` });\nreturn [{ json: { notifications: notes } }];"
+      },
+      "id": "g-43",
+      "name": "Save Job Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10640,
+        150
+      ],
+      "notes": "Saves the reply as the job result: succeeded when the reply is 2xx, failed otherwise, with the real http_status and body. Big results lose the optional fields first (marked result_trimmed), then become job_result_too_large. Three tries; if all fail, ops is told."
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "voice/intake/jobs",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-44",
+      "name": "Webhook: Job Status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        150
+      ],
+      "notes": "GET ?job_id=... (same token header as the main endpoint). Returns the job state and, when finished, the result the caller would have got synchronously.",
+      "webhookId": "voice-jobs"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-45",
+              "leftValue": "={{ String($json.webhookUrl || '').endsWith('/jobs') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-45",
+      "name": "Is Job Status?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "Both webhooks share the one CONFIG node, then split here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst bad = [];\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nif (!['off', 'optional', 'always'].includes(C.ASYNC_MODE)) bad.push('CONFIG.ASYNC_MODE must be \"off\", \"optional\" or \"always\"');\nelse if (C.ASYNC_MODE !== 'off' && !url(C.JOB_STORE_API_URL)) bad.push('CONFIG.JOB_STORE_API_URL must start with http:// or https:// when ASYNC_MODE is not \"off\"');\nif (!(Number(C.JOB_LEASE_SECONDS) > 0)) bad.push('CONFIG.JOB_LEASE_SECONDS must be a number > 0');\nif (!(Number(C.JOB_RESULT_MAX_BYTES) >= 100)) bad.push('CONFIG.JOB_RESULT_MAX_BYTES must be a number of at least 100');\nconst inp = $input.first().json;\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) } } }];\nif (C.VOICE_AUTH_TOKEN && (inp.headers || {})['x-voice-token'] !== C.VOICE_AUTH_TOKEN) return reject(401, 'unauthorized');\nif (bad.length) return reject(500, 'voice_misconfigured', bad);\nif (C.ASYNC_MODE === 'off') return reject(404, 'async_disabled');\nconst id = (inp.query || {}).job_id;\nif (typeof id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(id)) return reject(400, 'validation_failed', ['job_id query parameter is required: 1-128 characters, letters, digits and . _ : -']);\nreturn [{ json: { ok: true, job_id: id } }];"
+      },
+      "id": "g-46",
+      "name": "Plan Job Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        150
+      ],
+      "notes": "Order: auth (401), CONFIG (500), async switched off (404), job_id (400). The status call never starts any work."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-47",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-47",
+      "name": "Status Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.JOB_STORE_API_URL.replace(/\\/+$/, '') + '/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-48",
+      "name": "Get Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        150
+      ],
+      "notes": "GET /jobs/{id} -> 200 job | 404.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst id = $('Plan Job Status').first().json.job_id;\nconst reply = (status, body) => [{ json: { http_status: status, response_body: body } }];\nif (r.statusCode === 404) return reply(404, { error: 'job_not_found', job_id: id });\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nif (r.statusCode !== 200 || !b || b.id !== id || !['queued', 'running', 'succeeded', 'failed'].includes(b.state)) return reply(503, { error: 'job_store_unavailable', retry: true });\nif (b.kind !== 'voice') return reply(404, { error: 'job_not_found', job_id: id });\nconst out = { job_id: id, state: b.state, created_at: b.created_at, updated_at: b.updated_at };\nif ((b.state === 'queued' || b.state === 'running') && b.expires_at && Date.parse(b.expires_at) < Date.now()) {\n  out.state = 'failed'; out.error = 'worker_lost'; out.message = 'The job did not finish in time (the workflow was probably restarted or stopped). Submit it again.';\n} else if (b.state === 'succeeded' || b.state === 'failed') {\n  if (b.result !== undefined) out.result = b.result;\n  if (b.result_trimmed) out.result_trimmed = b.result_trimmed;\n}\nreturn reply(200, out);"
+      },
+      "id": "g-49",
+      "name": "Job Status Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        150
+      ],
+      "notes": "Always HTTP 200 for a job that exists: the job's own outcome is in result.http_status. A queued/running job past its lease is reported as failed (worker_lost), so nothing stays \"running\" forever."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-50",
+      "name": "Respond Job Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1960,
+        150
+      ],
+      "notes": "The single reply of the status endpoint."
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('Validate Request').first().json }];"
+      },
+      "id": "g-50",
+      "name": "Restore Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ],
+      "notes": "After \"Mark Running\" the item is the job store's answer, so the validated request is put back here. Every later node reads the request by name."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst n = $input.first().json.notifications || [];\nif (!C.ALERT_WEBHOOK_URL || !n.length) return [];\nreturn n.map((x) => ({ json: { text: x.text } }));"
+      },
+      "id": "g-51",
+      "name": "Expand Job Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10920,
+        150
+      ],
+      "notes": "Only when a job result could not be saved. Blank ALERT_WEBHOOK_URL = no alerts (the caller can still see the job go lost in the status endpoint)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.ALERT_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.text } }}"
+      },
+      "id": "g-52",
+      "name": "Send Job Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11200,
+        150
+      ],
+      "notes": "Slack-style incoming webhook: POST {text}. Best effort.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Voice Intake Pipeline\n**Setup (about 10 minutes)**\n1. Run the services (the README gives the exact request and response each must answer): speech-to-text, an agent, text-to-speech, a session store.\n2. Open **CONFIG**: set `SESSION_API_URL`, `STT_API_URL`, `AGENT_API_URL`, `TTS_API_URL` (the last three are full endpoint URLs). Optional: `VOICE_AUTH_TOKEN`, `QA_ARCHIVE_API_URL`.\n3. Activate, then `POST /webhook/voice/intake` with `{audio_base64, audio_format}`.\n\n**Each turn:** validate (decode + check the file signature) -> session -> transcribe -> judge the transcript -> agent (or a fixed reply) -> save the turn -> speak -> reply -> archive.\n\n\"I couldn't understand you\" is a normal outcome, not an error: silence, low confidence and unsupported languages get a spoken clarification and never reach the agent.",
         "height": 340,
         "width": 640,
         "color": 4
@@ -1007,6 +1479,173 @@
     }
   ],
   "connections": {
+    "Webhook: Job Status": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Async Requested?": {
+      "main": [
+        [
+          {
+            "node": "Create Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Job": {
+      "main": [
+        [
+          {
+            "node": "Job Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Verdict": {
+      "main": [
+        [
+          {
+            "node": "Job Created?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Created?": {
+      "main": [
+        [
+          {
+            "node": "Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Accepted": {
+      "main": [
+        [
+          {
+            "node": "Mark Running",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Async Job? (final)": {
+      "main": [
+        [
+          {
+            "node": "Save Job Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Job Status?": {
+      "main": [
+        [
+          {
+            "node": "Plan Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Voice Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Job Status": {
+      "main": [
+        [
+          {
+            "node": "Status Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Job": {
+      "main": [
+        [
+          {
+            "node": "Job Status Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Status Reply": {
+      "main": [
+        [
+          {
+            "node": "Respond Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Voice Intake Webhook": {
       "main": [
         [
@@ -1022,7 +1661,7 @@
       "main": [
         [
           {
-            "node": "Voice Rules",
+            "node": "Is Job Status?",
             "type": "main",
             "index": 0
           }
@@ -1055,7 +1694,7 @@
       "main": [
         [
           {
-            "node": "Has Session ID?",
+            "node": "Async Requested?",
             "type": "main",
             "index": 0
           }
@@ -1063,6 +1702,28 @@
         [
           {
             "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Running": {
+      "main": [
+        [
+          {
+            "node": "Restore Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Request": {
+      "main": [
+        [
+          {
+            "node": "Has Session ID?",
             "type": "main",
             "index": 0
           }
@@ -1408,7 +2069,7 @@
       "main": [
         [
           {
-            "node": "Respond",
+            "node": "Async Job? (final)",
             "type": "main",
             "index": 0
           }
@@ -1420,6 +2081,33 @@
         [
           {
             "node": "Expand QA Archive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Job Result": {
+      "main": [
+        [
+          {
+            "node": "Expand QA Archive",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Expand Job Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Job Alerts": {
+      "main": [
+        [
+          {
+            "node": "Send Job Alert",
             "type": "main",
             "index": 0
           }

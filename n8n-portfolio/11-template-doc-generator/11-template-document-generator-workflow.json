@@ -1291,7 +1291,7 @@
     },
     {
       "parameters": {
-        "content": "## Template-Driven Document Generator\n**Setup (about 5 minutes)**\n1. Run the reference services: `node 11-template-document-generator-mock-server.js` (port 4100). In production, point CONFIG at your own services instead.\n2. Open **CONFIG**. Defaults already target the mock on localhost:4100. If n8n runs in Docker, use `host.docker.internal`.\n3. Activate and POST to `/webhook/documents/generate` or `/webhook/documents/preview`.\n\n**Everything configurable lives in CONFIG.** No node has a hardcoded URL, vendor or credential.\n\n**Flow:** validate -> fetch template -> check fields and invoice totals -> allocate number (generate only) -> render -> PDF -> archive -> mark completed -> email + audit -> 201.\nAnything that fails after a number exists marks the record `failed_needs_retry`, so the same idempotency_key can safely retry.",
+        "content": "## Template-Driven Document Generator\n**Setup (about 5 minutes)**\n1. Run the services described in the README, or point CONFIG at your own.\n2. Open **CONFIG**. Defaults point at localhost:4100; change them to your own services. If n8n runs in Docker, use `host.docker.internal`.\n3. Activate and POST to `/webhook/documents/generate` or `/webhook/documents/preview`.\n\n**Everything configurable lives in CONFIG.** No node has a hardcoded URL, vendor or credential.\n\n**Flow:** validate -> fetch template -> check fields and invoice totals -> allocate number (generate only) -> render -> PDF -> archive -> mark completed -> email + audit -> 201.\nAnything that fails after a number exists marks the record `failed_needs_retry`, so the same idempotency_key can safely retry.",
         "height": 330,
         "width": 640,
         "color": 4

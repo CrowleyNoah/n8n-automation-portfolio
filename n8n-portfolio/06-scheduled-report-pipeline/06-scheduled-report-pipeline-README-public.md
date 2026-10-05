@@ -41,6 +41,52 @@ The **run id** is `REPORT_NAME-period_start_period_end` (for example `weekly_ops
 
 Malformed JSON never reaches the workflow: n8n itself rejects it with a `4xx`.
 
+## Async mode: get a job id now, collect the answer later (optional, off by default)
+
+A manual or backfill run waits for the sources, the PDF, the archive and every email. With async mode on, `POST /webhook/reports/generate` can answer straight away with a job id, and the caller picks up the result later. Think of a coat-check ticket: you hand the work over, get a number, and come back to the desk to ask "is it ready?". **Only the manual webhook can become a job**: the weekly schedule has no caller to answer, so scheduled runs always behave exactly as before (even with `ASYNC_MODE=always`), and alert instead.
+
+Turn it on in `CONFIG`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ASYNC_MODE` | `off` | `off`: always synchronous, the flags below are ignored. `optional`: synchronous unless the caller asks (`Prefer: respond-async` header or `?async=true`). `always`: every accepted manual request becomes a job. |
+| `JOB_STORE_API_URL` | blank | The job store (contract below). Required unless `off`; must be http or https. |
+| `JOB_LEASE_SECONDS` | 900 | How long a job may stay `queued` or `running` before it is reported lost. **Must not be shorter than `PROCESSING_TTL_SECONDS`** (the longest a run is expected to take), or the check refuses to start. |
+| `JOB_RESULT_MAX_BYTES` | 1000000 | Largest result stored (at least 100). A bigger result first loses the `failed_recipients` list (`result_trimmed` says so; `failed_count` stays). If it still does not fit, the job fails with `job_result_too_large`. |
+
+**Submit** exactly as before, adding `?async=true` (or the `Prefer` header). Bad requests (400, 401, 500 bad CONFIG) are still refused on the spot and create no job.
+
+| Status | Body | When |
+|---|---|---|
+| 202 | `{job_id, state:"queued", status_url, retry_after_seconds}` plus `Location` and `Retry-After` headers | Accepted; the run has started. |
+| 200 | `{job_id, state, existing:true, status_url}` | You sent an `Idempotency-Key` header and a live or finished job with that key already exists. Nothing runs twice. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store could not create the job. **Nothing was started** (no claim, no source fetched, nothing sent), so retrying is safe. |
+
+**Why jobs are keyed only by the `Idempotency-Key` header, not by the period:** re-running a period is a normal way to retry (re-running the same period without `force` retries only the failed deliveries), and a finished job for that period would block it. The run claim already guarantees exactly-once delivery: if you submit the same period twice with no key, both get jobs, the first runs, and the second ends as a **failed** job carrying `409 run_in_progress` (or, later, a succeeded one saying `skipped_already_sent`).
+
+**Collect** with `GET /webhook/reports/jobs?job_id=<id>` (same `x-report-token` header as the generate endpoint, when `REPORT_AUTH_TOKEN` is set):
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{job_id, state, created_at, updated_at, result?, result_trimmed?}` | `state` is `queued`, `running`, `succeeded` or `failed`. `result` is exactly what the synchronous call would have returned: `{http_status, body}`. A job is `succeeded` when that status is 2xx. A run that ended `partial_failure` is still a succeeded job: look at `result.body.status` and `failed_recipients`. A `502 failed_no_data` run is a **failed** job carrying the real body. |
+| 200 | `{job_id, state:"failed", error:"worker_lost", message}` | Still queued or running past its lease (n8n restarted or the run died). **Submit again**: a lost job never blocks a new one, and the run claim expires after `PROCESSING_TTL_SECONDS`. |
+| 400 / 401 | | Missing or malformed `job_id` / wrong token. |
+| 404 | `{error:"async_disabled"}` or `{error:"job_not_found"}` | Async is off, or the id is unknown or belongs to another workflow. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store is down. |
+
+The status call returns HTTP 200 for any job that exists; the run's own outcome is in `result.http_status` and `result.body`.
+
+**The job store.** A small HTTP service you run (the mock ships a reference version; put the same four calls in front of Redis, Postgres, Supabase and so on). All JSON, states `queued` → `running` → `succeeded` | `failed`. The kind used here is `report`.
+
+| Call | Behaviour |
+|---|---|
+| `POST /jobs {kind, key?, lease_seconds}` | Creates a job; the **store** generates the unguessable `id`. `201 {id, state:"queued", created_at, expires_at}`. If `key` is given and a job with the same `(kind, key)` is queued, running (not expired) or succeeded, return `200 {…that job, existing:true}` instead. A failed or lost job does not block a new one. |
+| `PATCH /jobs/{id} {state:"running", lease_seconds}` | `queued` → `running`, extends `expires_at`. `409` if not queued. |
+| `PATCH /jobs/{id} {state:"succeeded"\|"failed", result, result_trimmed?}` | Final write. `409` if already final: the first write wins. |
+| `GET /jobs/{id}` | `200 {id, kind, state, created_at, updated_at, expires_at, result?, result_trimmed?}` or `404`. |
+
+Send job-store credentials with `SERVICE_HEADERS_JSON`. If saving the result fails three times the report is still handled, ops get a Slack notice naming the job, and the job is left `running` so the lease reports it lost.
+
 ## Architecture
 
 ```
@@ -132,6 +178,7 @@ How a source's JSON is shown: an object becomes a key/value table (nested object
 | `PDF_TIMEOUT_MS` | 30000 | Timeout for Gotenberg and for the archive upload. |
 | `EMAIL_TIMEOUT_MS` | 15000 | Timeout per email send. |
 | `REQUEST_TIMEOUT_MS` | 10000 | Timeout for report-store, subscriber and Slack calls. |
+| `ASYNC_MODE` / `JOB_STORE_API_URL` / `JOB_LEASE_SECONDS` / `JOB_RESULT_MAX_BYTES` | `off` / blank / 900 / 1000000 | Optional async mode for manual runs (job id now, result later); see "Async mode" above. |
 
 ## Service contract
 
@@ -167,6 +214,9 @@ All JSON unless noted. `SERVICE_HEADERS_JSON` is sent on every report-store, sub
 | All emails fail | 502 `delivery_failed`. |
 | Report store unreachable at the claim | 503 `report_store_unavailable`; nothing fetched or sent; alert. |
 | Report store rejects the final record | The reply says what happened with `status_not_recorded`; alert; the claim expires on its own. |
+| Job store down at submit (async) | 503 `job_store_unavailable`; nothing started, nothing claimed. |
+| Job store down when marking "running" (async) | The run still goes ahead; the job just stays `queued` until it finishes. |
+| Result cannot be saved after 3 tries (async) | Report handled; ops alerted with the job id; the job is reported lost after its lease. |
 | Slack down or not configured | No effect on the run. |
 | Invalid CONFIG / `DATA_SOURCES_JSON` | 500 `report_misconfigured` naming every bad setting (a scheduled run alerts instead). |
 
@@ -187,12 +237,13 @@ Tested end to end on self-hosted n8n 2.35.7 against in-memory reference implemen
 - report store down at the claim; outcome record failing (3 tries, warning, alert)
 - five simultaneous requests: one run; a claim left behind by a crash is taken over after it expires
 - the schedule trigger: runs the previous Monday-Sunday, skips the already-sent period on its next firing without a second fetch, email or alert, and alerts when every source is down; required source; five sources; no-fallback and too-many-recipients stops; no Slack
+- async mode (manual webhook only): off by default (flags ignored, status endpoint 404); a 202 before the sources are even fetched, with Location and Retry-After; the job moving queued → running → succeeded with a result equal to the synchronous reply; a failed run as a failed job with the real 502; a partial delivery as a succeeded job; bad requests refused with no job or claim; the same `Idempotency-Key` never runs twice; two simultaneous submissions of one period sending three emails in all (the second job ends 409); job store down at submit (no claim, nothing fetched); a failed "mark running"; result saves retried, then a Slack alert; lost jobs reported after the lease; oversize results trimmed or failed; the status endpoint's token, bad ids, other workflows' jobs, store down; `always` mode; a scheduled run never turning into a job; bad settings (including a lease shorter than the run limit) named in the `500`. Deliberately weakening the async logic in 14 ways makes the suite fail
 
-Not tested: a real Gotenberg / Chromium (PDF appearance), a real mail service, a real report store, n8n 1.x, queue mode, the actual weekly Monday 08:00 firing (the test fires it every minute instead; the period maths is the same), large attachments, sustained load.
+Not tested: a real job store (only the reference one in the mock); a real Gotenberg, a real mail service, a real report store, n8n 1.x, queue mode, the actual weekly Monday 08:00 firing (the test fires it every minute instead; the period maths is the same), large attachments, sustained load.
 
 ## Known limits
 
-- **Synchronous.** The caller of a manual run waits for everything: sources (fetched one after another), PDF, archive and every email. Worst case is roughly twice the sum of your timeouts plus one send per recipient; keep the list modest or call the endpoint from something that can wait.
+- **Synchronous unless you turn async mode on.** By default the caller of a manual run waits for everything: sources (fetched one after another), PDF, archive and every email. Worst case is roughly twice the sum of your timeouts plus one send per recipient; keep the list modest or call the endpoint from something that can wait.
 - **n8n's own node retry is not used for the multi-item steps.** in my tests it did not retry the failing source fetch, and it re-sent every item in the email step, so those two steps use an explicit second pass instead: one more try, only for transient failures. Gotenberg, the archive upload and the final record use n8n's built-in retry (3 tries).
 - **Duplicate protection depends on your mail service.** The workflow sends an `idempotency_key` with every email and never re-sends to someone the store lists as delivered, but if the process dies after a send and before the outcome is recorded, only a mail service that drops repeated keys prevents a duplicate on the re-run.
 - **A crash holds the period.** If a run dies mid-way, the period stays claimed until `PROCESSING_TTL_SECONDS` passes (15 minutes by default), then the next run takes over.
@@ -201,4 +252,8 @@ Not tested: a real Gotenberg / Chromium (PDF appearance), a real mail service, a
 - **Plain layout.** Sources are shown as tables, cards and lists of whatever JSON they return. The Report Layout node sets page size, accent colour, font, headline figures, sorting, totals and highlights, but there are no charts or images, no repeated page headers or footers, and one attachment for everyone. How `page` and `theme` look in a real Chromium render has not been checked.
 - **The whole PDF is held in memory** and attached to every email.
 - **Recipients are not personalised** and `MAX_RECIPIENTS` stops a run rather than truncating the list.
+- **Async mode needs a job store you run.** The mock ships a reference one, not a production service, and async was tested against that mock only. Only manual runs can be jobs; the schedule is unchanged.
+- **Async work still runs inside one n8n execution.** A restart or n8n's own execution timeout ends it; the lease then reports the job lost and the caller submits again (a crashed run's period stays claimed until `PROCESSING_TTL_SECONDS`, so an immediate resubmit may end as a job whose result is `409 run_in_progress`). Emails already sent are protected by the store's delivered list and the mail service's idempotency key.
+- **Async has no push notification.** The caller polls the status endpoint. A callback URL is deliberately left out (it needs the same care about which addresses it may call as any outbound URL); adding one means a new node that calls your URL, and the URL must be checked the same way.
+- **Anyone holding the workflow token can read that workflow's jobs.** Job ids are unguessable but behave like bearer secrets. Many async submissions at once all run at once; use n8n queue mode or a gateway to cap that.
 - n8n's own `422` for malformed JSON includes a stack trace in its body; put a gateway in front if that matters.

@@ -36,7 +36,7 @@ Nothing is hardcoded. The signing secret, the header names, every service URL an
 
 The presets use their own fixed header names and ignore `SIGNATURE_HEADER` / `TIMESTAMP_HEADER`. Put the secret the sender shows you (Stripe's `whsec_...`, the GitHub webhook secret, Shopify's app secret) into `WEBHOOK_SIGNING_SECRET`. The generic scheme accepts a leading `sha256=`, upper-case hex and millisecond timestamps.
 
-**Replay protection differs by scheme.** Where there is no signed timestamp (`github`, `shopify`, a body-only generic scheme) nothing limits how old a captured request can be. What stops a replay is the order record: the same signed request again is a `200 duplicate` and nothing runs twice, for as long as the event store keeps the record. Only the sender's own formats are supported; the payload is not an order in the shape this workflow wants unless you map it (the Order Mapping node; `04-secured-webhook-order-processor-EXTEND.md` recipe 11 shows Shopify's orders).
+**Replay protection differs by scheme.** Where there is no signed timestamp (`github`, `shopify`, a body-only generic scheme) nothing limits how old a captured request can be. What stops a replay is the order record: the same signed request again is a `200 duplicate` and nothing runs twice, for as long as the event store keeps the record. Only the sender's own formats are supported; the payload is not an order in the shape this workflow wants unless you map it (the Order Mapping node is where that edit goes; Shopify's order shape is the usual example).
 
 For schemes with a signed timestamp, it must be within `TIMESTAMP_TOLERANCE_SECONDS` (300) of now, in either direction.
 

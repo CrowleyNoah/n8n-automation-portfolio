@@ -982,7 +982,7 @@
     },
     {
       "parameters": {
-        "content": "## CRM Lead Enrichment & Dedup\n**Setup (about 10 minutes)**\n1. Run the three backing services (a reference implementation is included: `node 09-crm-lead-enrichment-dedup-mock-server.js`, port 4300): a lead store, an enrichment API, a CRM.\n2. Open **CONFIG**: set `LEAD_STORE_API_URL`, `ENRICHMENT_API_URL`, `CRM_API_URL`, optionally `SLACK_WEBHOOK_URL` and `INTAKE_AUTH_TOKEN`.\n3. Activate, then `POST /webhook/leads/intake` with `{email, first_name, last_name, company}`.\n\n**Each lead:** validate -> claim (atomic) -> enrich (best effort) -> search CRM -> score -> merge / create / flag -> record or release the claim -> reply -> notify.\n\nServices are plain HTTP contracts, so any CRM or lead store works if it speaks them (see the README).",
+        "content": "## CRM Lead Enrichment & Dedup\n**Setup (about 10 minutes)**\n1. Run the three backing services (the README gives the exact request and response each must answer): a lead store, an enrichment API, a CRM.\n2. Open **CONFIG**: set `LEAD_STORE_API_URL`, `ENRICHMENT_API_URL`, `CRM_API_URL`, optionally `SLACK_WEBHOOK_URL` and `INTAKE_AUTH_TOKEN`.\n3. Activate, then `POST /webhook/leads/intake` with `{email, first_name, last_name, company}`.\n\n**Each lead:** validate -> claim (atomic) -> enrich (best effort) -> search CRM -> score -> merge / create / flag -> record or release the claim -> reply -> notify.\n\nServices are plain HTTP contracts, so any CRM or lead store works if it speaks them (see the README).",
         "height": 330,
         "width": 640,
         "color": 4

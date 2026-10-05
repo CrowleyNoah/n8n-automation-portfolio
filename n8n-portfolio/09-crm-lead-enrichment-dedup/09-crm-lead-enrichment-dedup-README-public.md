@@ -184,7 +184,7 @@ Tested end to end on self-hosted n8n 2.35.7 against an in-memory reference imple
 - explicit `lead_id`; `AT&T`, `+`, apostrophes, accents
 - eleven kinds of bad input are 400s and touch no service; malformed JSON is refused by n8n; 401s; Slack failing or not configured; bad CONFIG names every problem
 
-Not tested: n8n 1.x, queue mode, a real CRM (HubSpot, Salesforce, …), a real enrichment provider, real Slack, a database-backed lead store, sustained load.
+Not tested: n8n 1.x, queue mode, a real CRM, a real enrichment provider, real Slack, a database-backed lead store, sustained load.
 
 ## Known limits
 

@@ -1193,7 +1193,7 @@
         "width": 640,
         "height": 500,
         "color": 4,
-        "content": "## Rate-Limited API Gateway with Circuit Breaker\n**Setup (about 5 minutes)**\n1. Run a state service that implements the HTTP contract in the README (a reference one is included: `node 12-rate-limited-api-gateway-mock-server.js`).\n2. Open the **CONFIG** node and set the three service URLs, `STATE_API_HEADERS_JSON` if your service needs auth, and `PROVIDERS_JSON` (one entry per API you front).\n3. Activate the workflow and POST to `/webhook/gateway/fetch`.\n\n**Adding another API** = add a key to `PROVIDERS_JSON`. No node changes.\n\n**Tuning** (thresholds, cooldowns, retries, timeouts) = CONFIG only.\n\n**Per-API rules** (allowed paths and parameters, fields to remove, staleness limit, no caching, fewer attempts) = the data-only **Gateway Rules** node.\n\nNothing else in this workflow contains a URL, secret or limit."
+        "content": "## Rate-Limited API Gateway with Circuit Breaker\n**Setup (about 5 minutes)**\n1. Run a state service that implements the HTTP contract in the README.\n2. Open the **CONFIG** node and set the three service URLs, `STATE_API_HEADERS_JSON` if your service needs auth, and `PROVIDERS_JSON` (one entry per API you front).\n3. Activate the workflow and POST to `/webhook/gateway/fetch`.\n\n**Adding another API** = add a key to `PROVIDERS_JSON`. No node changes.\n\n**Tuning** (thresholds, cooldowns, retries, timeouts) = CONFIG only.\n\n**Per-API rules** (allowed paths and parameters, fields to remove, staleness limit, no caching, fewer attempts) = the data-only **Gateway Rules** node.\n\nNothing else in this workflow contains a URL, secret or limit."
       },
       "id": "g-sticky",
       "name": "Read Me First",

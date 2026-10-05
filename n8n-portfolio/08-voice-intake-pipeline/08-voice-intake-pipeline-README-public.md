@@ -69,6 +69,53 @@ Every outcome that has something to say returns the same body shape:
 
 Two cases never reach the workflow because n8n refuses them first: malformed JSON (`422`) and a request over n8n's own size cap, 16 MB by default (an error status; 500 in this version). Keep `MAX_AUDIO_BYTES` below that cap allowing for base64's one-third overhead.
 
+## Async mode: get a job id now, collect the reply later (optional, off by default)
+
+A voice turn waits for speech-to-text, the agent and text-to-speech, which can take a while. With async mode on, `POST /webhook/voice/intake` can answer straight away with a job id, and the caller picks the reply up later. Think of a coat-check ticket: you hand the recording over, get a number, and come back to ask "is it ready?". **Be honest about the fit:** a live phone-style conversation wants the answer now, so async rarely suits it. It is for batch or offline use: voicemail, uploaded recordings, a back-office queue, or a client that cannot hold a connection open for a long turn.
+
+Turn it on in `CONFIG`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ASYNC_MODE` | `off` | `off`: always synchronous, the flags below are ignored. `optional`: synchronous unless the caller asks (`Prefer: respond-async` header or `?async=true`). `always`: every accepted request becomes a job. |
+| `JOB_STORE_API_URL` | blank | The job store (contract below). Required unless `off`; must be http or https. |
+| `JOB_LEASE_SECONDS` | 300 | How long a job may stay `queued` or `running` before it is reported lost. **Must not be shorter than the slowest possible run** (2 x `STT_TIMEOUT_MS` + `AGENT_TIMEOUT_MS` + 2 x `TTS_TIMEOUT_MS`, 120 s with the defaults), or the check refuses to start. |
+| `JOB_RESULT_MAX_BYTES` | 1000000 | Largest result stored (at least 100). Audio is bulky, so a bigger result first loses the reply audio (`result_trimmed: ["audio"]`, `has_audio:false` and the warning `audio_omitted_job_result_too_large`; the text, transcript and everything else stay). If it still does not fit, the job fails with `job_result_too_large`. |
+| `ALERT_WEBHOOK_URL` | blank | Optional Slack-style incoming webhook (`POST {text}`). Used only to tell you a job result could not be saved. Blank = no alerts. |
+
+**Submit** exactly as before, adding `?async=true` (or the `Prefer` header). Bad requests (400, 401, 500 bad CONFIG) are still refused on the spot and create no job.
+
+| Status | Body | When |
+|---|---|---|
+| 202 | `{job_id, state:"queued", status_url, retry_after_seconds}` plus `Location` and `Retry-After` headers | Accepted; the audio will be processed. |
+| 200 | `{job_id, state, existing:true, status_url}` | You sent an `Idempotency-Key` header and a live or finished job with that key already exists. Nothing runs twice. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store could not create the job. **Nothing was started** (no transcription, no agent call, nothing saved), so retrying is safe. |
+
+**Why jobs are keyed only by the `Idempotency-Key` header:** the same person can legitimately say the same thing twice, so nothing in the audio is used to merge two requests. Without a key, two submissions are two jobs and two agent calls. To make a retried upload harmless, send an `Idempotency-Key` (and, to protect the conversation history, a `turn_id`).
+
+**Collect** with `GET /webhook/voice/intake/jobs?job_id=<id>` (same `x-voice-token` header as the intake endpoint, when `VOICE_AUTH_TOKEN` is set):
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{job_id, state, created_at, updated_at, result?, result_trimmed?}` | `state` is `queued`, `running`, `succeeded` or `failed`. `result` is exactly what the synchronous call would have returned: `{http_status, body}`, audio included. A job is `succeeded` when that status is 2xx, so a `503 stt_failed` or `agent_failed` call is a **failed** job carrying the real body (with its spoken apology). A `silent` or `low_confidence` outcome is a 200 and so a succeeded job: read `result.body.outcome`. |
+| 200 | `{job_id, state:"failed", error:"worker_lost", message}` | Still queued or running past its lease (n8n restarted or the run died). **Submit again**: a lost job never blocks a new one. |
+| 400 / 401 | | Missing or malformed `job_id` / wrong token. |
+| 404 | `{error:"async_disabled"}` or `{error:"job_not_found"}` | Async is off, or the id is unknown or belongs to another workflow. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store is down. |
+
+The status call returns HTTP 200 for any job that exists; the call's own outcome is in `result.http_status` and `result.body`.
+
+**The job store.** A small HTTP service you run (the mock ships a reference version; put the same four calls in front of Redis, Postgres, Supabase and so on). All JSON, states `queued` → `running` → `succeeded` | `failed`. The kind used here is `voice`.
+
+| Call | Behaviour |
+|---|---|
+| `POST /jobs {kind, key?, lease_seconds}` | Creates a job; the **store** generates the unguessable `id`. `201 {id, state:"queued", created_at, expires_at}`. If `key` is given and a job with the same `(kind, key)` is queued, running (not expired) or succeeded, return `200 {…that job, existing:true}` instead. A failed or lost job does not block a new one. |
+| `PATCH /jobs/{id} {state:"running", lease_seconds}` | `queued` → `running`, extends `expires_at`. `409` if not queued. |
+| `PATCH /jobs/{id} {state:"succeeded"\|"failed", result, result_trimmed?}` | Final write. `409` if already final: the first write wins. |
+| `GET /jobs/{id}` | `200 {id, kind, state, created_at, updated_at, expires_at, result?, result_trimmed?}` or `404`. |
+
+Send job-store credentials with `SERVICE_HEADERS_JSON`. If saving the result fails three times the call is still processed (and the session saved), you get a notice on `ALERT_WEBHOOK_URL` naming the job if one is set, and the job is left `running` so the lease reports it lost. **The job store holds the transcript, the reply and the reply audio.** That is personal data: give it a short retention and the same care as the session store.
+
 ## Architecture
 
 ```
@@ -146,6 +193,7 @@ request → auth + CONFIG sanity + validation (decode base64, check file signatu
 | `MSG_STT_FAILED`, `MSG_CLARIFY`, `MSG_UNSUPPORTED_LANGUAGE`, `MSG_AGENT_FAILED` | English sentences | What the caller hears in each situation. |
 | `REQUEST_TIMEOUT_MS` | 8000 | Timeout for the session store and archive. |
 | `STT_TIMEOUT_MS` / `AGENT_TIMEOUT_MS` / `TTS_TIMEOUT_MS` | 30000 / 20000 / 20000 | Timeouts for the three AI services. |
+| `ASYNC_MODE` / `JOB_STORE_API_URL` / `JOB_LEASE_SECONDS` / `JOB_RESULT_MAX_BYTES` / `ALERT_WEBHOOK_URL` | `off` / blank / 300 / 1000000 / blank | Optional async mode (job id now, reply later); see "Async mode" above. |
 
 ## Service contract
 
@@ -176,11 +224,14 @@ All JSON unless noted. Each service gets only its own header set.
 | Session store down on lookup | `200`, `session_status:"unavailable"`, `session_store_unavailable`; the turn is not saved. |
 | Session store fails on save | `200` with `session_not_saved`. |
 | QA archive slow, down, erroring | No effect on the reply (it runs afterwards). |
+| Job store down at submit (async) | `503 job_store_unavailable`; nothing transcribed, asked or saved. |
+| Job store down when marking "running" (async) | The call still goes ahead; the job just stays `queued` until it finishes. |
+| Result cannot be saved after 3 tries (async) | The call is handled and saved; the alert webhook (if set) is told with the job id; the job is reported lost after its lease. |
 | Invalid CONFIG | `500 voice_misconfigured` naming every bad setting. |
 
 ## Verification
 
-Tested end to end on self-hosted n8n 2.35.7 against an in-memory reference implementation of the service contract above (not included in this repo), using real WAV/MP3/Ogg/WebM container bytes. 142 checks, all passing, across ten configurations (defaults; auth token + per-service headers + QA archive; text-only; custom limits and messages; signature check off; deliberately bad CONFIG; n8n storing binaries on disk; and three rules configurations: the example rules, deliberately broken ones, and rules with a syntax error):
+Tested end to end on self-hosted n8n 2.35.7 against an in-memory reference implementation of the service contract above (not included in this repo), using real WAV/MP3/Ogg/WebM container bytes. 200 checks, all passing, across 17 configurations (defaults; auth token + per-service headers + QA archive; text-only; custom limits and messages; signature check off; deliberately bad CONFIG; n8n storing binaries on disk; three rules configurations: the example rules, deliberately broken ones, and rules with a syntax error; and seven async configurations):
 
 - happy path: the audio arrives at the speech service as a multipart file with the right name, type and bytes; the agent gets a real JSON body; TTS speaks exactly the reply; the reply audio is a playable WAV; the turn is saved
 - conversation continuity, history cap, unknown or expired session ids, session store down or dropping, save failures, `turn_id` de-duplication
@@ -191,12 +242,13 @@ Tested end to end on self-hosted n8n 2.35.7 against an in-memory reference imple
 - ten simultaneous callers: no cross-talk, ten distinct sessions
 - token 401s; each service receives only its own headers; the archive receives the interaction (without audio), and a slow, failing or dropped archive never affects the reply
 - text-only mode; limits, language list, messages, history cap, STT language and degraded status code all taken from CONFIG; bad CONFIG names every problem; n8n's on-disk binary mode
+- async mode: off by default (asking for it changes nothing, status endpoint 404); a 202 before the speech service has even answered, with Location and Retry-After; the job moving queued → running → succeeded with a result equal to the synchronous reply, audio included; agent and speech-to-text failures as failed jobs with the real 503 body; bad requests refused with no job; the same `Idempotency-Key` never runs twice, and two submissions without one are two jobs; job store down at submit (nothing transcribed, asked or saved); a failed "mark running" tolerated; the result save retried, then an alert, with the job left running; lost jobs (past their lease) reported as `worker_lost` while finished and in-lease jobs are not; the status endpoint's 401 / 400 / 404 / 503 cases and its refusal to show another workflow's jobs; oversize results losing only the audio, or failing cleanly; `ASYNC_MODE=always`; bad async settings and a lease shorter than the slowest run refused on both endpoints
 
-Not tested: n8n 1.x, S3 or queue-mode binary storage, a real Whisper, TTS engine or LLM, audio recorded by a real browser or phone, real speech (the reference speech service reads scripted audio), sustained load.
+Not tested: a real job store (only the reference one in the mock); n8n 1.x, S3 or queue-mode binary storage, a real Whisper, TTS engine or LLM, audio recorded by a real browser or phone, real speech (the reference speech service reads scripted audio), sustained load.
 
 ## Known limits
 
-- **Synchronous.** The caller waits for speech-to-text, the agent and text-to-speech. With the default timeouts and retries the worst case is about two minutes; typical turns are seconds. For live conversation, lower the timeouts (`STT_TIMEOUT_MS`, `AGENT_TIMEOUT_MS`, `TTS_TIMEOUT_MS`) and expect the client to show a "thinking" state.
+- **Synchronous unless you turn async mode on.** By default the caller waits for speech-to-text, the agent and text-to-speech. With the default timeouts and retries the worst case is about two minutes; typical turns are seconds. For live conversation, lower the timeouts (`STT_TIMEOUT_MS`, `AGENT_TIMEOUT_MS`, `TTS_TIMEOUT_MS`) and expect the client to show a "thinking" state.
 - **Clip-based, not streaming.** One recording in, one reply out (push-to-talk style).
 - **Request size.** Audio travels as base64 inside JSON (about a third larger). n8n's default request cap is 16 MB, so `MAX_AUDIO_BYTES` defaults to 10 MB. To accept more, raise n8n's `N8N_PAYLOAD_SIZE_MAX` as well.
 - **Confidence limits are service-specific.** The default -1.0 suits Whisper's `avg_logprob`. A service that reports a different scale needs a different `MIN_CONFIDENCE_LOGPROB`, or should omit `segments` so confidence isn't judged.
@@ -206,4 +258,8 @@ Not tested: n8n 1.x, S3 or queue-mode binary storage, a real Whisper, TTS engine
 - **Turns are exactly-once only if the client sends `turn_id`**, and only if your session store and agent honour it. Without it, a client that retries a timed-out upload stores the turn twice.
 - **Speech and retries.** A failing speech-to-text or TTS call is retried once, including on a 4xx (a wasted attempt, not a harmful one).
 - **`duration_seconds` is client-reported** and is only range-checked. The `webm` signature check only verifies the container header.
+- **Async mode needs a job store you run.** The mock ships a reference one, not a production service, and async was tested against that mock only. It rarely suits live conversation (see "Async mode"); it is for batch or offline use.
+- **Async work still runs inside one n8n execution.** A restart or n8n's own execution timeout ends it; the lease then reports the job lost and the caller submits again. A turn that already reached the session store before the crash is stored once if the client sends the same `turn_id`.
+- **Async has no push notification.** The caller polls the status endpoint. A callback URL is deliberately left out (it needs the same care about which addresses it may call as any outbound URL); adding one means a new node that calls your URL, and the URL must be checked the same way.
+- **Anyone holding the workflow token can read that workflow's jobs**, including transcripts and reply audio. Job ids are unguessable but behave like bearer secrets. Many async submissions at once all run at once; use n8n queue mode or a gateway to cap that.
 - **Voice is personal data.** The transcript is returned to the caller; archiving is off unless `QA_ARCHIVE_API_URL` is set. Decide retention and consent before turning it on.

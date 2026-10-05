@@ -161,6 +161,30 @@
               "name": "REQUEST_TIMEOUT_MS",
               "value": 10000,
               "type": "number"
+            },
+            {
+              "id": "cfg-19",
+              "name": "ASYNC_MODE",
+              "value": "off",
+              "type": "string"
+            },
+            {
+              "id": "cfg-20",
+              "name": "JOB_STORE_API_URL",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "cfg-21",
+              "name": "JOB_LEASE_SECONDS",
+              "value": 900,
+              "type": "number"
+            },
+            {
+              "id": "cfg-22",
+              "name": "JOB_RESULT_MAX_BYTES",
+              "value": 1000000,
+              "type": "number"
             }
           ]
         },
@@ -186,21 +210,21 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        840,
         0
       ],
       "notes": "EDIT ME for how the report looks: section titles and order, which fields show, labels, number formats, intro and footer text, extra CSS and the email wording. Data only; checked on every run. Values stay escaped and an incomplete report always says so."
     },
     {
       "parameters": {
-        "jsCode": "const C = $('CONFIG').first().json;\nconst inp = $input.first().json;\nconst manual = inp.headers !== undefined;\nconst triggered_by = manual ? 'manual' : 'schedule';\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, triggered_by, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: manual ? [] : [{ text: `Scheduled run did not start: ${error}${details ? ' (' + details.join('; ') + ')' : ''}` }] } }];\n\nif (manual && C.REPORT_AUTH_TOKEN && (inp.headers || {})['x-report-token'] !== C.REPORT_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity\nconst bad = [];\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nfor (const k of ['REPORT_STORE_API_URL', 'GOTENBERG_API_URL', 'DISTRIBUTION_API_URL', 'NOTIFY_API_URL']) if (!url(C[k])) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.SLACK_WEBHOOK_URL && !url(C.SLACK_WEBHOOK_URL)) bad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'GOTENBERG_HEADERS_JSON']) { try { if (!isObj(JSON.parse(C[k] || '{}'))) throw 0; } catch (e) { bad.push(`CONFIG.${k} must be a JSON object`); } }\nconst EMAIL = /^[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+$/;\nif (C.FALLBACK_RECIPIENT_EMAIL && !EMAIL.test(C.FALLBACK_RECIPIENT_EMAIL)) bad.push('CONFIG.FALLBACK_RECIPIENT_EMAIL must be blank or a valid email address');\nif (!/^[A-Za-z0-9._-]{1,64}$/.test(C.REPORT_NAME || '')) bad.push('CONFIG.REPORT_NAME must be 1-64 characters: letters, digits and . _ -');\nif (typeof C.REPORT_TITLE !== 'string' || !C.REPORT_TITLE.trim() || C.REPORT_TITLE.length > 120) bad.push('CONFIG.REPORT_TITLE must be 1-120 characters');\nfor (const k of ['MAX_RECIPIENTS', 'MAX_PERIOD_DAYS', 'PROCESSING_TTL_SECONDS', 'SOURCE_TIMEOUT_MS', 'PDF_TIMEOUT_MS', 'EMAIL_TIMEOUT_MS', 'REQUEST_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nconst sources = [];\ntry {\n  const raw = JSON.parse(C.DATA_SOURCES_JSON);\n  if (!Array.isArray(raw) || !raw.length) throw new Error('DATA_SOURCES_JSON must be a non-empty JSON array');\n  const seen = new Set();\n  raw.forEach((s, i) => {\n    const w = `DATA_SOURCES_JSON[${i}]`;\n    if (!isObj(s)) { bad.push(`${w} must be an object`); return; }\n    if (typeof s.name !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(s.name)) bad.push(`${w}.name must be 1-64 characters: letters, digits and . _ -`);\n    else if (seen.has(s.name)) bad.push(`${w}.name \"${s.name}\" is used twice`); else seen.add(s.name);\n    if (!url(s.url)) bad.push(`${w}.url must start with http(s)://`);\n    if (s.label !== undefined && (typeof s.label !== 'string' || !s.label.trim() || s.label.length > 100)) bad.push(`${w}.label must be a 1-100 character string`);\n    if (s.headers !== undefined && !isObj(s.headers)) bad.push(`${w}.headers must be an object`);\n    if (s.required !== undefined && typeof s.required !== 'boolean') bad.push(`${w}.required must be true or false`);\n    const t = s.timeout_ms === undefined ? Number(C.SOURCE_TIMEOUT_MS) : Number(s.timeout_ms);\n    if (!(t > 0 && t <= 300000)) bad.push(`${w}.timeout_ms must be between 1 and 300000`);\n    sources.push({ name: s.name, label: (s.label || s.name).trim(), url: s.url, headers: isObj(s.headers) ? s.headers : {}, required: s.required === true, timeout_ms: t });\n  });\n} catch (e) { bad.push('CONFIG.DATA_SOURCES_JSON is not valid: ' + e.message); }\n// ---- the Report Layout node\n{\n  const L = $('Report Layout').first().json.layout;\n  const lb = (m) => bad.push('Layout: ' + m);\n  const names = sources.map((s) => s.name);\n  const str = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;\n  const strList = (v, max) => Array.isArray(v) && v.length <= max && v.every((x) => str(x, 1, 64)) && new Set(v).size === v.length;\n  const FORMATS = ['number', 'int', 'money', 'percent', 'date', 'text'];\n  if (!L._is_obj) lb('layout must be an object');\n  else {\n    for (const k of L._raw_keys) if (!['css', 'intro', 'footer', 'currency', 'order', 'sections', 'email', 'page', 'theme', 'kpis'].includes(k)) lb(`${k} is not a known setting (css, intro, footer, currency, order, sections, email, page, theme, kpis)`);\n    if (L.page !== null) {\n      if (!isObj(L.page)) lb('page must be an object (or null)');\n      else {\n        for (const k of Object.keys(L.page)) if (!['size', 'landscape', 'margin_mm'].includes(k)) lb(`page.${k} is not a known setting (size, landscape, margin_mm)`);\n        if (L.page.size !== undefined && !['A4', 'A3', 'Letter', 'Legal'].includes(L.page.size)) lb('page.size must be A4, A3, Letter or Legal');\n        if (L.page.landscape !== undefined && typeof L.page.landscape !== 'boolean') lb('page.landscape must be true or false');\n        if (L.page.margin_mm !== undefined && !(typeof L.page.margin_mm === 'number' && L.page.margin_mm >= 0 && L.page.margin_mm <= 50)) lb('page.margin_mm must be a number from 0 to 50');\n      }\n    }\n    if (L.theme !== null) {\n      if (!isObj(L.theme)) lb('theme must be an object (or null)');\n      else {\n        for (const k of Object.keys(L.theme)) if (!['accent', 'font', 'font_size'].includes(k)) lb(`theme.${k} is not a known setting (accent, font, font_size)`);\n        if (L.theme.accent !== undefined && !/^#[0-9a-fA-F]{6}$/.test(L.theme.accent)) lb('theme.accent must be a colour written like #0b5394');\n        if (L.theme.font !== undefined && !['sans', 'serif', 'mono'].includes(L.theme.font)) lb('theme.font must be sans, serif or mono');\n        if (L.theme.font_size !== undefined && !(Number.isInteger(L.theme.font_size) && L.theme.font_size >= 8 && L.theme.font_size <= 18)) lb('theme.font_size must be a whole number from 8 to 18');\n      }\n    }\n    if (!Array.isArray(L.kpis) || L.kpis.length > 8) lb('kpis must be a list of at most 8 figures');\n    else L.kpis.forEach((k, i) => {\n      const w = `kpis[${i}]`;\n      if (!isObj(k)) { lb(`${w} must be an object`); return; }\n      for (const x of Object.keys(k)) if (!['source', 'key', 'label', 'format', 'agg', 'column'].includes(x)) lb(`${w}.${x} is not a known setting (source, key, label, format, agg, column)`);\n      if (!names.includes(k.source)) lb(`${w}.source must be a data source name from DATA_SOURCES_JSON (known names: ${names.join(', ')})`);\n      if (k.key !== undefined && !(typeof k.key === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(k.key))) lb(`${w}.key must be a key name or dotted path (letters, digits, _ . -)`);\n      if (k.label !== undefined && !str(k.label, 1, 60)) lb(`${w}.label must be 1 to 60 characters`);\n      if (k.format !== undefined && !FORMATS.includes(k.format)) lb(`${w}.format must be one of ${FORMATS.join(', ')}`);\n      if (k.agg !== undefined && !['sum', 'avg', 'min', 'max', 'count'].includes(k.agg)) lb(`${w}.agg must be sum, avg, min, max or count`);\n      if (k.agg === undefined && k.key === undefined) lb(`${w} needs a key (or an agg for a source that is a list)`);\n      if (k.agg !== undefined && k.agg !== 'count' && !(typeof k.column === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(k.column))) lb(`${w}.column is needed for agg \"${k.agg}\" (the column to ${k.agg})`);\n      if (k.column !== undefined && k.agg === undefined) lb(`${w}.column only makes sense together with agg`);\n    });\n    if (!str(L.css, 0, 5000) || /[<>]/.test(L.css) || /@import|url\\s*\\(|expression\\s*\\(/i.test(L.css)) lb('css must be text of at most 5000 characters with no < or >, no @import and no url(...)');\n    if (!str(L.intro, 0, 1000)) lb('intro must be text of at most 1000 characters');\n    if (!str(L.footer, 0, 1000)) lb('footer must be text of at most 1000 characters');\n    if (!str(L.currency, 0, 5)) lb('currency must be text of at most 5 characters');\n    if (!strList(L.order, 100) || !L.order.every((n) => names.includes(n))) lb('order must be a list of different data source names from DATA_SOURCES_JSON (known names: ' + names.join(', ') + ')');\n    if (!isObj(L.sections)) lb('sections must be an object');\n    else for (const [n, sec] of Object.entries(L.sections)) {\n      const w = `sections.${n}`;\n      if (!names.includes(n)) { lb(`${w}: \"${n}\" is not a data source name from DATA_SOURCES_JSON (known names: ${names.join(', ')})`); continue; }\n      if (!isObj(sec)) { lb(`${w} must be an object`); continue; }\n      for (const k of Object.keys(sec)) if (!['title', 'show', 'hide', 'labels', 'formats', 'max_rows', 'empty_text', 'note', 'style', 'sort', 'total', 'highlight'].includes(k)) lb(`${w}.${k} is not a known setting (title, show, hide, labels, formats, max_rows, empty_text, note, style, sort, total, highlight)`);\n      if (sec.style !== undefined && !['table', 'cards'].includes(sec.style)) lb(`${w}.style must be table or cards`);\n      if (sec.sort !== undefined) {\n        if (!isObj(sec.sort) || !str(sec.sort.by, 1, 64) || (sec.sort.order !== undefined && !['asc', 'desc'].includes(sec.sort.order)) || Object.keys(sec.sort).some((k) => !['by', 'order'].includes(k))) lb(`${w}.sort must be { by: 'column', order: 'asc' or 'desc' }`);\n      }\n      if (sec.total !== undefined && !strList(sec.total, 20)) lb(`${w}.total must be a list of at most 20 different column names`);\n      if (sec.highlight !== undefined) {\n        if (!Array.isArray(sec.highlight) || sec.highlight.length > 20) lb(`${w}.highlight must be a list of at most 20 rules`);\n        else sec.highlight.forEach((h, j) => {\n          const hw = `${w}.highlight[${j}]`;\n          if (!isObj(h)) { lb(`${hw} must be an object`); return; }\n          for (const k of Object.keys(h)) if (!['key', 'op', 'value', 'tone'].includes(k)) lb(`${hw}.${k} is not a known setting (key, op, value, tone)`);\n          if (!str(h.key, 1, 64)) lb(`${hw}.key must be a key or column name`);\n          if (!['>', '>=', '<', '<=', '==', '!='].includes(h.op)) lb(`${hw}.op must be one of > >= < <= == !=`);\n          if (!((typeof h.value === 'number' && isFinite(h.value)) || str(h.value, 0, 100))) lb(`${hw}.value must be a number or text of at most 100 characters`);\n          else if (typeof h.value === 'string' && !['==', '!='].includes(h.op)) lb(`${hw}: text values only work with == and !=`);\n          if (!['good', 'warn', 'bad'].includes(h.tone)) lb(`${hw}.tone must be good, warn or bad`);\n        });\n      }\n      if (sec.title !== undefined && !str(sec.title, 1, 100)) lb(`${w}.title must be 1 to 100 characters`);\n      for (const k of ['show', 'hide']) if (sec[k] !== undefined && !strList(sec[k], 50)) lb(`${w}.${k} must be a list of at most 50 different key names`);\n      if (sec.labels !== undefined && !(isObj(sec.labels) && Object.keys(sec.labels).length <= 50 && Object.values(sec.labels).every((x) => str(x, 1, 60)))) lb(`${w}.labels must be an object of key -> heading (1 to 60 characters)`);\n      if (sec.formats !== undefined && !(isObj(sec.formats) && Object.keys(sec.formats).length <= 50 && Object.values(sec.formats).every((x) => FORMATS.includes(x)))) lb(`${w}.formats must be an object of key -> one of ${FORMATS.join(', ')}`);\n      if (sec.max_rows !== undefined && !(Number.isInteger(sec.max_rows) && sec.max_rows >= 1 && sec.max_rows <= 500)) lb(`${w}.max_rows must be a whole number from 1 to 500`);\n      for (const k of ['empty_text', 'note']) if (sec[k] !== undefined && !str(sec[k], 1, 300)) lb(`${w}.${k} must be 1 to 300 characters`);\n    }\n    if (!isObj(L.email)) lb('email must be an object');\n    else {\n      for (const k of L._raw_email_keys) if (!['subject', 'body'].includes(k)) lb(`email.${k} is not a known setting (subject, body)`);\n      const PH = ['title', 'period_start', 'period_end', 'run_id'];\n      const phOk = (t) => [...t.matchAll(/\\{([A-Za-z_]+)\\}/g)].every((m) => PH.includes(m[1]));\n      if (!str(L.email.subject, 1, 200) || /[\\r\\n]/.test(L.email.subject)) lb('email.subject must be one line of 1 to 200 characters');\n      else if (!phOk(L.email.subject)) lb('email.subject uses an unknown {placeholder} (allowed: {title} {period_start} {period_end} {run_id})');\n      if (!str(L.email.body, 1, 2000)) lb('email.body must be 1 to 2000 characters');\n      else if (!phOk(L.email.body)) lb('email.body uses an unknown {placeholder} (allowed: {title} {period_start} {period_end} {run_id})');\n    }\n  }\n}\nif (bad.length) return reject(500, 'report_misconfigured', bad);\n\n// ---- the period\nconst DAY = 86400000;\nconst parseDate = (s) => { if (typeof s !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) return null; const d = new Date(s + 'T00:00:00Z'); return !isNaN(d) && d.toISOString().slice(0, 10) === s ? d : null; };\nlet period_start, period_end, force = false;\nif (manual) {\n  const b = inp.body;\n  if (!isObj(b)) return reject(400, 'validation_failed', ['body must be a JSON object']);\n  const errors = [];\n  const ds = parseDate(b.period_start), de = parseDate(b.period_end);\n  if (!ds) errors.push('period_start must be a real ISO date (YYYY-MM-DD)');\n  if (!de) errors.push('period_end must be a real ISO date (YYYY-MM-DD)');\n  if (ds && de) {\n    if (ds > de) errors.push('period_start must not be after period_end');\n    else if ((de - ds) / DAY + 1 > Number(C.MAX_PERIOD_DAYS)) errors.push(`the period must not be longer than ${C.MAX_PERIOD_DAYS} days`);\n  }\n  if (b.force !== undefined && b.force !== null && typeof b.force !== 'boolean') errors.push('force must be true or false');\n  if (errors.length) return reject(400, 'validation_failed', errors);\n  period_start = b.period_start; period_end = b.period_end; force = b.force === true;\n} else {\n  const now = new Date();\n  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());\n  const thisMonday = today - ((now.getUTCDay() + 6) % 7) * DAY;\n  period_start = new Date(thisMonday - 7 * DAY).toISOString().slice(0, 10);\n  period_end = new Date(thisMonday - 1 * DAY).toISOString().slice(0, 10);\n}\nconst run_id = `${C.REPORT_NAME}-${period_start}_${period_end}`;\nreturn [{ json: { ok: true, triggered_by, force, period_start, period_end, run_id, sources, tail: null } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst inp = $input.first().json;\nconst manual = inp.headers !== undefined;\nconst triggered_by = manual ? 'manual' : 'schedule';\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\nconst reject = (status, error, details) => [{ json: { ok: false, triggered_by, http_status: status, response_body: { error, ...(details ? { details } : {}) }, notifications: manual ? [] : [{ text: `Scheduled run did not start: ${error}${details ? ' (' + details.join('; ') + ')' : ''}` }] } }];\n\nif (manual && C.REPORT_AUTH_TOKEN && (inp.headers || {})['x-report-token'] !== C.REPORT_AUTH_TOKEN) return reject(401, 'unauthorized');\n\n// ---- CONFIG sanity\nconst bad = [];\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nfor (const k of ['REPORT_STORE_API_URL', 'GOTENBERG_API_URL', 'DISTRIBUTION_API_URL', 'NOTIFY_API_URL']) if (!url(C[k])) bad.push(`CONFIG.${k} must start with http:// or https://`);\nif (C.SLACK_WEBHOOK_URL && !url(C.SLACK_WEBHOOK_URL)) bad.push('CONFIG.SLACK_WEBHOOK_URL must be blank or start with http(s)://');\nfor (const k of ['SERVICE_HEADERS_JSON', 'GOTENBERG_HEADERS_JSON']) { try { if (!isObj(JSON.parse(C[k] || '{}'))) throw 0; } catch (e) { bad.push(`CONFIG.${k} must be a JSON object`); } }\nconst EMAIL = /^[^\\s@,;<>]+@[^\\s@,;<>]+\\.[^\\s@,;<>]+$/;\nif (C.FALLBACK_RECIPIENT_EMAIL && !EMAIL.test(C.FALLBACK_RECIPIENT_EMAIL)) bad.push('CONFIG.FALLBACK_RECIPIENT_EMAIL must be blank or a valid email address');\nif (!/^[A-Za-z0-9._-]{1,64}$/.test(C.REPORT_NAME || '')) bad.push('CONFIG.REPORT_NAME must be 1-64 characters: letters, digits and . _ -');\nif (typeof C.REPORT_TITLE !== 'string' || !C.REPORT_TITLE.trim() || C.REPORT_TITLE.length > 120) bad.push('CONFIG.REPORT_TITLE must be 1-120 characters');\nfor (const k of ['MAX_RECIPIENTS', 'MAX_PERIOD_DAYS', 'PROCESSING_TTL_SECONDS', 'SOURCE_TIMEOUT_MS', 'PDF_TIMEOUT_MS', 'EMAIL_TIMEOUT_MS', 'REQUEST_TIMEOUT_MS']) if (!(Number(C[k]) > 0)) bad.push(`CONFIG.${k} must be a number > 0`);\nconst sources = [];\ntry {\n  const raw = JSON.parse(C.DATA_SOURCES_JSON);\n  if (!Array.isArray(raw) || !raw.length) throw new Error('DATA_SOURCES_JSON must be a non-empty JSON array');\n  const seen = new Set();\n  raw.forEach((s, i) => {\n    const w = `DATA_SOURCES_JSON[${i}]`;\n    if (!isObj(s)) { bad.push(`${w} must be an object`); return; }\n    if (typeof s.name !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(s.name)) bad.push(`${w}.name must be 1-64 characters: letters, digits and . _ -`);\n    else if (seen.has(s.name)) bad.push(`${w}.name \"${s.name}\" is used twice`); else seen.add(s.name);\n    if (!url(s.url)) bad.push(`${w}.url must start with http(s)://`);\n    if (s.label !== undefined && (typeof s.label !== 'string' || !s.label.trim() || s.label.length > 100)) bad.push(`${w}.label must be a 1-100 character string`);\n    if (s.headers !== undefined && !isObj(s.headers)) bad.push(`${w}.headers must be an object`);\n    if (s.required !== undefined && typeof s.required !== 'boolean') bad.push(`${w}.required must be true or false`);\n    const t = s.timeout_ms === undefined ? Number(C.SOURCE_TIMEOUT_MS) : Number(s.timeout_ms);\n    if (!(t > 0 && t <= 300000)) bad.push(`${w}.timeout_ms must be between 1 and 300000`);\n    sources.push({ name: s.name, label: (s.label || s.name).trim(), url: s.url, headers: isObj(s.headers) ? s.headers : {}, required: s.required === true, timeout_ms: t });\n  });\n} catch (e) { bad.push('CONFIG.DATA_SOURCES_JSON is not valid: ' + e.message); }\n// ---- the Report Layout node\n{\n  const L = $('Report Layout').first().json.layout;\n  const lb = (m) => bad.push('Layout: ' + m);\n  const names = sources.map((s) => s.name);\n  const str = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;\n  const strList = (v, max) => Array.isArray(v) && v.length <= max && v.every((x) => str(x, 1, 64)) && new Set(v).size === v.length;\n  const FORMATS = ['number', 'int', 'money', 'percent', 'date', 'text'];\n  if (!L._is_obj) lb('layout must be an object');\n  else {\n    for (const k of L._raw_keys) if (!['css', 'intro', 'footer', 'currency', 'order', 'sections', 'email', 'page', 'theme', 'kpis'].includes(k)) lb(`${k} is not a known setting (css, intro, footer, currency, order, sections, email, page, theme, kpis)`);\n    if (L.page !== null) {\n      if (!isObj(L.page)) lb('page must be an object (or null)');\n      else {\n        for (const k of Object.keys(L.page)) if (!['size', 'landscape', 'margin_mm'].includes(k)) lb(`page.${k} is not a known setting (size, landscape, margin_mm)`);\n        if (L.page.size !== undefined && !['A4', 'A3', 'Letter', 'Legal'].includes(L.page.size)) lb('page.size must be A4, A3, Letter or Legal');\n        if (L.page.landscape !== undefined && typeof L.page.landscape !== 'boolean') lb('page.landscape must be true or false');\n        if (L.page.margin_mm !== undefined && !(typeof L.page.margin_mm === 'number' && L.page.margin_mm >= 0 && L.page.margin_mm <= 50)) lb('page.margin_mm must be a number from 0 to 50');\n      }\n    }\n    if (L.theme !== null) {\n      if (!isObj(L.theme)) lb('theme must be an object (or null)');\n      else {\n        for (const k of Object.keys(L.theme)) if (!['accent', 'font', 'font_size'].includes(k)) lb(`theme.${k} is not a known setting (accent, font, font_size)`);\n        if (L.theme.accent !== undefined && !/^#[0-9a-fA-F]{6}$/.test(L.theme.accent)) lb('theme.accent must be a colour written like #0b5394');\n        if (L.theme.font !== undefined && !['sans', 'serif', 'mono'].includes(L.theme.font)) lb('theme.font must be sans, serif or mono');\n        if (L.theme.font_size !== undefined && !(Number.isInteger(L.theme.font_size) && L.theme.font_size >= 8 && L.theme.font_size <= 18)) lb('theme.font_size must be a whole number from 8 to 18');\n      }\n    }\n    if (!Array.isArray(L.kpis) || L.kpis.length > 8) lb('kpis must be a list of at most 8 figures');\n    else L.kpis.forEach((k, i) => {\n      const w = `kpis[${i}]`;\n      if (!isObj(k)) { lb(`${w} must be an object`); return; }\n      for (const x of Object.keys(k)) if (!['source', 'key', 'label', 'format', 'agg', 'column'].includes(x)) lb(`${w}.${x} is not a known setting (source, key, label, format, agg, column)`);\n      if (!names.includes(k.source)) lb(`${w}.source must be a data source name from DATA_SOURCES_JSON (known names: ${names.join(', ')})`);\n      if (k.key !== undefined && !(typeof k.key === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(k.key))) lb(`${w}.key must be a key name or dotted path (letters, digits, _ . -)`);\n      if (k.label !== undefined && !str(k.label, 1, 60)) lb(`${w}.label must be 1 to 60 characters`);\n      if (k.format !== undefined && !FORMATS.includes(k.format)) lb(`${w}.format must be one of ${FORMATS.join(', ')}`);\n      if (k.agg !== undefined && !['sum', 'avg', 'min', 'max', 'count'].includes(k.agg)) lb(`${w}.agg must be sum, avg, min, max or count`);\n      if (k.agg === undefined && k.key === undefined) lb(`${w} needs a key (or an agg for a source that is a list)`);\n      if (k.agg !== undefined && k.agg !== 'count' && !(typeof k.column === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(k.column))) lb(`${w}.column is needed for agg \"${k.agg}\" (the column to ${k.agg})`);\n      if (k.column !== undefined && k.agg === undefined) lb(`${w}.column only makes sense together with agg`);\n    });\n    if (!str(L.css, 0, 5000) || /[<>]/.test(L.css) || /@import|url\\s*\\(|expression\\s*\\(/i.test(L.css)) lb('css must be text of at most 5000 characters with no < or >, no @import and no url(...)');\n    if (!str(L.intro, 0, 1000)) lb('intro must be text of at most 1000 characters');\n    if (!str(L.footer, 0, 1000)) lb('footer must be text of at most 1000 characters');\n    if (!str(L.currency, 0, 5)) lb('currency must be text of at most 5 characters');\n    if (!strList(L.order, 100) || !L.order.every((n) => names.includes(n))) lb('order must be a list of different data source names from DATA_SOURCES_JSON (known names: ' + names.join(', ') + ')');\n    if (!isObj(L.sections)) lb('sections must be an object');\n    else for (const [n, sec] of Object.entries(L.sections)) {\n      const w = `sections.${n}`;\n      if (!names.includes(n)) { lb(`${w}: \"${n}\" is not a data source name from DATA_SOURCES_JSON (known names: ${names.join(', ')})`); continue; }\n      if (!isObj(sec)) { lb(`${w} must be an object`); continue; }\n      for (const k of Object.keys(sec)) if (!['title', 'show', 'hide', 'labels', 'formats', 'max_rows', 'empty_text', 'note', 'style', 'sort', 'total', 'highlight'].includes(k)) lb(`${w}.${k} is not a known setting (title, show, hide, labels, formats, max_rows, empty_text, note, style, sort, total, highlight)`);\n      if (sec.style !== undefined && !['table', 'cards'].includes(sec.style)) lb(`${w}.style must be table or cards`);\n      if (sec.sort !== undefined) {\n        if (!isObj(sec.sort) || !str(sec.sort.by, 1, 64) || (sec.sort.order !== undefined && !['asc', 'desc'].includes(sec.sort.order)) || Object.keys(sec.sort).some((k) => !['by', 'order'].includes(k))) lb(`${w}.sort must be { by: 'column', order: 'asc' or 'desc' }`);\n      }\n      if (sec.total !== undefined && !strList(sec.total, 20)) lb(`${w}.total must be a list of at most 20 different column names`);\n      if (sec.highlight !== undefined) {\n        if (!Array.isArray(sec.highlight) || sec.highlight.length > 20) lb(`${w}.highlight must be a list of at most 20 rules`);\n        else sec.highlight.forEach((h, j) => {\n          const hw = `${w}.highlight[${j}]`;\n          if (!isObj(h)) { lb(`${hw} must be an object`); return; }\n          for (const k of Object.keys(h)) if (!['key', 'op', 'value', 'tone'].includes(k)) lb(`${hw}.${k} is not a known setting (key, op, value, tone)`);\n          if (!str(h.key, 1, 64)) lb(`${hw}.key must be a key or column name`);\n          if (!['>', '>=', '<', '<=', '==', '!='].includes(h.op)) lb(`${hw}.op must be one of > >= < <= == !=`);\n          if (!((typeof h.value === 'number' && isFinite(h.value)) || str(h.value, 0, 100))) lb(`${hw}.value must be a number or text of at most 100 characters`);\n          else if (typeof h.value === 'string' && !['==', '!='].includes(h.op)) lb(`${hw}: text values only work with == and !=`);\n          if (!['good', 'warn', 'bad'].includes(h.tone)) lb(`${hw}.tone must be good, warn or bad`);\n        });\n      }\n      if (sec.title !== undefined && !str(sec.title, 1, 100)) lb(`${w}.title must be 1 to 100 characters`);\n      for (const k of ['show', 'hide']) if (sec[k] !== undefined && !strList(sec[k], 50)) lb(`${w}.${k} must be a list of at most 50 different key names`);\n      if (sec.labels !== undefined && !(isObj(sec.labels) && Object.keys(sec.labels).length <= 50 && Object.values(sec.labels).every((x) => str(x, 1, 60)))) lb(`${w}.labels must be an object of key -> heading (1 to 60 characters)`);\n      if (sec.formats !== undefined && !(isObj(sec.formats) && Object.keys(sec.formats).length <= 50 && Object.values(sec.formats).every((x) => FORMATS.includes(x)))) lb(`${w}.formats must be an object of key -> one of ${FORMATS.join(', ')}`);\n      if (sec.max_rows !== undefined && !(Number.isInteger(sec.max_rows) && sec.max_rows >= 1 && sec.max_rows <= 500)) lb(`${w}.max_rows must be a whole number from 1 to 500`);\n      for (const k of ['empty_text', 'note']) if (sec[k] !== undefined && !str(sec[k], 1, 300)) lb(`${w}.${k} must be 1 to 300 characters`);\n    }\n    if (!isObj(L.email)) lb('email must be an object');\n    else {\n      for (const k of L._raw_email_keys) if (!['subject', 'body'].includes(k)) lb(`email.${k} is not a known setting (subject, body)`);\n      const PH = ['title', 'period_start', 'period_end', 'run_id'];\n      const phOk = (t) => [...t.matchAll(/\\{([A-Za-z_]+)\\}/g)].every((m) => PH.includes(m[1]));\n      if (!str(L.email.subject, 1, 200) || /[\\r\\n]/.test(L.email.subject)) lb('email.subject must be one line of 1 to 200 characters');\n      else if (!phOk(L.email.subject)) lb('email.subject uses an unknown {placeholder} (allowed: {title} {period_start} {period_end} {run_id})');\n      if (!str(L.email.body, 1, 2000)) lb('email.body must be 1 to 2000 characters');\n      else if (!phOk(L.email.body)) lb('email.body uses an unknown {placeholder} (allowed: {title} {period_start} {period_end} {run_id})');\n    }\n  }\n}\nif (!['off', 'optional', 'always'].includes(C.ASYNC_MODE)) bad.push('CONFIG.ASYNC_MODE must be \"off\", \"optional\" or \"always\"');\nelse if (C.ASYNC_MODE !== 'off' && !url(C.JOB_STORE_API_URL)) bad.push('CONFIG.JOB_STORE_API_URL must start with http:// or https:// when ASYNC_MODE is not \"off\"');\nif (!(Number(C.JOB_LEASE_SECONDS) > 0)) bad.push('CONFIG.JOB_LEASE_SECONDS must be a number > 0');\nif (!(Number(C.JOB_RESULT_MAX_BYTES) >= 100)) bad.push('CONFIG.JOB_RESULT_MAX_BYTES must be a number of at least 100');\nif (C.ASYNC_MODE !== 'off' && Number(C.JOB_LEASE_SECONDS) > 0 && Number(C.PROCESSING_TTL_SECONDS) > 0 && Number(C.JOB_LEASE_SECONDS) < Number(C.PROCESSING_TTL_SECONDS)) bad.push('CONFIG.JOB_LEASE_SECONDS must not be shorter than PROCESSING_TTL_SECONDS (the longest a run is expected to take)');\nif (bad.length) return reject(500, 'report_misconfigured', bad);\n\n// ---- the period\nconst DAY = 86400000;\nconst parseDate = (s) => { if (typeof s !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) return null; const d = new Date(s + 'T00:00:00Z'); return !isNaN(d) && d.toISOString().slice(0, 10) === s ? d : null; };\nlet period_start, period_end, force = false;\nlet asyncOut = { wanted: false, key: null };      // only manual requests can become jobs; a scheduled run has no caller\nif (manual) {\n  const b = inp.body;\n  if (!isObj(b)) return reject(400, 'validation_failed', ['body must be a JSON object']);\n  const errors = [];\n  const ds = parseDate(b.period_start), de = parseDate(b.period_end);\n  if (!ds) errors.push('period_start must be a real ISO date (YYYY-MM-DD)');\n  if (!de) errors.push('period_end must be a real ISO date (YYYY-MM-DD)');\n  if (ds && de) {\n    if (ds > de) errors.push('period_start must not be after period_end');\n    else if ((de - ds) / DAY + 1 > Number(C.MAX_PERIOD_DAYS)) errors.push(`the period must not be longer than ${C.MAX_PERIOD_DAYS} days`);\n  }\n  if (b.force !== undefined && b.force !== null && typeof b.force !== 'boolean') errors.push('force must be true or false');\nconst asyncAsked = String((inp.headers || {}).prefer || '').toLowerCase().split(',').some((s) => s.split(';')[0].trim() === 'respond-async') || ['true', '1'].includes(String((inp.query || {}).async || '').toLowerCase());\nconst asyncWanted = C.ASYNC_MODE === 'always' || (C.ASYNC_MODE === 'optional' && asyncAsked);\nlet jobKey = '';\nif (asyncWanted) {\n  const ik = (inp.headers || {})['idempotency-key'];\n  if (ik !== undefined) { if (typeof ik !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(ik.trim())) errors.push('idempotency-key header must be 1-128 characters: letters, digits and . _ : -'); else jobKey = ik.trim(); }\n}\nconst asyncInfo = { wanted: asyncWanted, key: jobKey || null };\nasyncOut = asyncInfo;\n  if (errors.length) return reject(400, 'validation_failed', errors);\n  period_start = b.period_start; period_end = b.period_end; force = b.force === true;\n} else {\n  const now = new Date();\n  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());\n  const thisMonday = today - ((now.getUTCDay() + 6) % 7) * DAY;\n  period_start = new Date(thisMonday - 7 * DAY).toISOString().slice(0, 10);\n  period_end = new Date(thisMonday - 1 * DAY).toISOString().slice(0, 10);\n}\nconst run_id = `${C.REPORT_NAME}-${period_start}_${period_end}`;\nreturn [{ json: { ok: true, triggered_by, force, period_start, period_end, run_id, sources, tail: null, async: asyncOut } }];"
       },
       "id": "g-4",
       "name": "Plan Run",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
+        1120,
         0
       ],
       "notes": "Checks auth (manual only), CONFIG including every data source, and the period. Scheduled runs compute the previous Monday-Sunday. run_id = report name + exact period, so a custom backfill can never collide with the weekly run."
@@ -234,7 +258,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1120,
+        1400,
         0
       ]
     },
@@ -264,7 +288,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
+        3360,
         0
       ],
       "notes": "POST /reports/{run_id}/claim {ttl_seconds, force} -> {claimed, record:{status, delivered[]}}. ATOMIC: exactly one concurrent caller gets claimed:true. This replaces a read-then-write check, which lets two runs both pass.",
@@ -279,7 +303,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
+        3640,
         0
       ],
       "notes": "claimed -> carry on (possibly resuming a partial run). Already sent -> skip. Someone else is running it -> 409. Store unreachable -> stop (503): without the claim we cannot promise not to send twice."
@@ -313,7 +337,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1960,
+        3920,
         0
       ]
     },
@@ -326,7 +350,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2240,
+        4200,
         0
       ],
       "notes": "One item per data source from DATA_SOURCES_JSON, with ?start=&end= added to its URL."
@@ -352,7 +376,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2520,
+        4480,
         0
       ],
       "notes": "Fetches every source, one after another. A source that fails continues as an error item, so one slow or dead source never stops the others.",
@@ -367,7 +391,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2800,
+        4760,
         0
       ],
       "notes": "Turns each reply into {available, data | detail}. \"Unavailable\" is kept strictly apart from \"no activity\" (an empty answer). All sources down, or a source marked required down, stops the run instead of emailing a hollow report."
@@ -401,7 +425,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        3080,
+        5040,
         0
       ]
     },
@@ -414,7 +438,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3360,
+        5320,
         0
       ],
       "notes": "Second chance, only for sources that failed in a way that can be transient (network error, timeout, 5xx, 408, 429)."
@@ -440,7 +464,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3640,
+        5600,
         0
       ],
       "notes": "Same request as Fetch Source, for the failed sources only.",
@@ -455,7 +479,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3920,
+        5880,
         0
       ],
       "notes": "Replaces the failed results with the retry results and re-assesses completeness."
@@ -489,7 +513,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        4200,
+        6160,
         0
       ]
     },
@@ -502,7 +526,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4480,
+        6440,
         0
       ],
       "notes": "Turns each source's JSON into a table (key/value, rows of records, lists), with every value HTML-escaped so data can never inject markup. Builds the index.html file Gotenberg expects."
@@ -544,7 +568,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4760,
+        6720,
         0
       ],
       "notes": "POST multipart/form-data with one file part named \"files\" called index.html (Gotenberg's contract). NOT neverError: a 5xx must throw so the 3 retries really happen; a final failure continues down the failure path.",
@@ -562,7 +586,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5040,
+        7000,
         0
       ],
       "notes": "Does not trust a 200: the bytes must start with %PDF before anything is archived or emailed."
@@ -596,7 +620,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        5320,
+        7280,
         0
       ]
     },
@@ -644,7 +668,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5600,
+        7560,
         0
       ],
       "notes": "POST /reports/{run_id}/archive (multipart: a \"pdf\" file part + fields) -> {archive_url}. Must be idempotent per run_id because it is retried (3 tries; not neverError so 5xx retries).",
@@ -662,7 +686,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5880,
+        7840,
         0
       ],
       "notes": "Archive and delivery are separate concerns: an archive failure does NOT stop the emails. It is reported as a warning and alerted."
@@ -689,7 +713,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        6160,
+        8120,
         0
       ],
       "notes": "GET /subscribers?report=NAME -> {emails:[...]}. Any failure or empty list falls back to FALLBACK_RECIPIENT_EMAIL.",
@@ -704,7 +728,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        6440,
+        8400,
         0
       ],
       "notes": "Validates and de-duplicates addresses (case-insensitive), falls back if the list is unavailable, stops if there is nobody (or suspiciously many), and - when resuming a partially delivered run - skips people who already received the report."
@@ -738,7 +762,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        6720,
+        8680,
         0
       ]
     },
@@ -771,7 +795,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        7000,
+        8960,
         0
       ]
     },
@@ -784,7 +808,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7280,
+        9240,
         0
       ],
       "notes": "One item per recipient, each carrying the PDF (the binary is copied onto every item explicitly: it does not follow a fan-out by itself). The idempotency key lets the mail service drop a retry that already went out."
@@ -837,7 +861,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        7560,
+        9520,
         0
       ],
       "notes": "POST /send-with-attachment (multipart: to, subject, body, idempotency_key, attachment file). Runs once per recipient; each is isolated (a bad address becomes one failed result, never a failed batch) and transient failures get a second try.",
@@ -852,7 +876,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7840,
+        9800,
         0
       ],
       "notes": "Pairs each send result with its recipient. A bad address (4xx) is final; a network error, timeout, 5xx, 408 or 429 gets one more try."
@@ -886,7 +910,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        8120,
+        10080,
         0
       ]
     },
@@ -899,7 +923,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        8400,
+        10360,
         0
       ],
       "notes": "Only the recipients whose first attempt may have been a transient failure. Same idempotency key as before, so a mail service that actually did send the first time drops the duplicate."
@@ -952,7 +976,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        8680,
+        10640,
         0
       ],
       "notes": "Same request as Send Report Email, for the recipients that need a second try.",
@@ -967,7 +991,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        8960,
+        10920,
         0
       ]
     },
@@ -980,7 +1004,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        9240,
+        11200,
         0
       ]
     },
@@ -1009,7 +1033,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        9520,
+        11480,
         0
       ],
       "notes": "POST /reports/{run_id}/complete {status: sent|partial_failure|failed, delivered[], failed[], sent_at, archive_url, detail}. Only now is the run remembered as done. Retried 3 times.",
@@ -1027,7 +1051,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        9800,
+        11760,
         0
       ],
       "notes": "Builds the final reply: status, counts, who failed, missing sections, archive link, warnings. Each problem also becomes one Slack message."
@@ -1041,7 +1065,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7000,
+        8960,
         150
       ],
       "notes": "Common exit for \"no data\", \"PDF failed\", \"no recipients\": releases the claim so a re-run is allowed."
@@ -1071,7 +1095,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        7280,
+        9240,
         150
       ],
       "notes": "Records the run as failed. A failed run can be claimed again, so fixing the problem and re-running just works (nothing was sent, so nothing is duplicated).",
@@ -1089,7 +1113,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7560,
+        9520,
         150
       ]
     },
@@ -1122,7 +1146,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        10080,
+        12320,
         0
       ]
     },
@@ -1139,7 +1163,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        10360,
+        12600,
         0
       ],
       "notes": "The single reply node. Only manual / backfill runs reach it; a scheduled run has no caller, so it ends quietly (problems still alert)."
@@ -1153,7 +1177,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        10640,
+        12880,
         0
       ],
       "notes": "Runs AFTER the reply (or at the end of a scheduled run). Returns nothing when there is nothing to say or no Slack webhook is configured."
@@ -1181,7 +1205,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        10920,
+        13160,
         0
       ],
       "notes": "Slack-compatible incoming webhook. Failure is ignored on purpose.",
@@ -1189,7 +1213,423 @@
     },
     {
       "parameters": {
-        "content": "## Scheduled Report Pipeline\n**Setup (about 10 minutes)**\n1. Run the backing services (a reference implementation is included: `node 06-scheduled-report-pipeline-mock-server.js`, port 4600): data sources, report store, subscriber list, mail sender, plus a Gotenberg (`docker run -p 3000:3000 gotenberg/gotenberg:8`) for real PDFs. The mock includes a Gotenberg stand-in.\n2. Open **CONFIG**: edit `DATA_SOURCES_JSON` (your data sources: name, label, url, optional headers / required / timeout), the service URLs, `FALLBACK_RECIPIENT_EMAIL`, optional `SLACK_WEBHOOK_URL` and `REPORT_AUTH_TOKEN`.\n3. Check the **Weekly Schedule** node (Mondays 08:00 in the instance time zone), then activate.\n4. Backfill / re-run: `POST /webhook/reports/generate` with `{\"period_start\":\"2026-09-21\",\"period_end\":\"2026-09-27\"}` (add `\"force\":true` to resend a period that was already sent).\n\n**Each run:** claim the period (atomic) -> fetch sources -> render HTML -> PDF -> archive -> resolve recipients -> email each one -> record the outcome -> reply -> alert.",
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-44",
+              "leftValue": "={{ $json.async.wanted === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-44",
+      "name": "Async Requested?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "notes": "Only when ASYNC_MODE allows it AND the caller asked (Prefer: respond-async, or ?async=true; ASYNC_MODE=always means every request). No -> the normal synchronous flow, untouched."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CONFIG').first().json.JOB_STORE_API_URL.replace(/\\/+$/, '') + '/jobs' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { kind: 'report', key: $json.async.key, lease_seconds: Number($('CONFIG').first().json.JOB_LEASE_SECONDS) } }}"
+      },
+      "id": "g-45",
+      "name": "Create Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        0
+      ],
+      "notes": "POST /jobs {kind, key, lease_seconds} -> 201 new job {id,...} | 200 {existing:true,...} when this key already has a live or finished job. The STORE makes the (unguessable) id.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nconst idOk = b && typeof b.id === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(b.id);\nconst statusUrl = (id) => String($('Manual / Backfill Webhook').first().json.webhookUrl || '').replace(/\\/generate\\/?$/, '') + '/jobs?job_id=' + encodeURIComponent(id);\nif (!idOk || !(r.statusCode === 201 || (r.statusCode === 200 && b.existing === true))) return [{ json: { ok: false, http_status: 503, response_body: { error: 'job_store_unavailable', message: 'The job could not be created, so nothing was started. Try again shortly.', retry: true } } }];\nif (b.existing === true) return [{ json: { ok: false, http_status: 200, response_body: { job_id: b.id, state: b.state, existing: true, status_url: statusUrl(b.id) } } }];\nreturn [{ json: { ok: true, job: { id: b.id, status_url: statusUrl(b.id) } } }];"
+      },
+      "id": "g-46",
+      "name": "Job Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ],
+      "notes": "Created -> accepted. Already exists -> 200 with that job (nothing is started twice). Job store down or odd answer -> 503 and NOTHING started."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-47",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-47",
+      "name": "Job Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { job_id: $json.job.id, state: \"queued\", status_url: $json.job.status_url, retry_after_seconds: 2 } }}",
+        "options": {
+          "responseCode": 202,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Location",
+                "value": "={{ $json.job.status_url }}"
+              },
+              {
+                "name": "Retry-After",
+                "value": "2"
+              }
+            ]
+          }
+        }
+      },
+      "id": "g-48",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2800,
+        0
+      ],
+      "notes": "The coat-check ticket: 202 with the job id and where to ask, sent straight away. The work carries on after this reply."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CONFIG').first().json.JOB_STORE_API_URL.replace(/\\/+$/, '') + '/jobs/' + encodeURIComponent($json.job.id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { state: 'running', lease_seconds: Number($('CONFIG').first().json.JOB_LEASE_SECONDS) } }}"
+      },
+      "id": "g-49",
+      "name": "Mark Running",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        0
+      ],
+      "notes": "PATCH /jobs/{id} {state:\"running\", lease_seconds}. Best effort: if it fails the job stays queued and the work still runs.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-50",
+              "leftValue": "={{ $('Plan Run').first().json.async.wanted === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-50",
+      "name": "Async Job? (early)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        150
+      ],
+      "notes": "The request stopped early (for example the ticket is already being worked on). In async mode that reply becomes the job result instead of a direct reply."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-51",
+              "leftValue": "={{ $('Plan Run').first().json.async.wanted === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-51",
+      "name": "Async Job? (final)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        12040,
+        0
+      ],
+      "notes": "The work finished. Async: the reply is saved as the job result. Sync: it is sent to the caller as before."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst inp = $input.first().json;\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst job = $('Job Verdict').first().json.job;\nconst ident = String('run ' + $('Plan Run').first().json.run_id);\nconst body = JSON.parse(JSON.stringify(inp.response_body === undefined ? null : inp.response_body));\nconst status = Number(inp.http_status);\nconst notes = (inp.notifications || []).slice();\nconst max = Number(C.JOB_RESULT_MAX_BYTES);\nconst size = (o) => Buffer.byteLength(JSON.stringify(o));\nlet result = { http_status: status, body };\nlet state = status >= 200 && status < 300 ? 'succeeded' : 'failed';\nconst dropped = [];\nif (size(result) > max && body && typeof body === 'object') {\n  if (Array.isArray(body.failed_recipients) && body.failed_recipients.length) { delete body.failed_recipients; dropped.push('failed_recipients'); }\n  result = { http_status: status, body };\n}\nif (size(result) > max) { state = 'failed'; result = { http_status: 500, body: { error: 'job_result_too_large', message: `The result is larger than JOB_RESULT_MAX_BYTES (${max}).`, retry: false } }; dropped.length = 0; notes.push({ text: `Job ${job.id} (${ident}) finished but its result is larger than JOB_RESULT_MAX_BYTES, so the job was saved as failed (job_result_too_large).` }); }\nconst headers = JSON.parse(C.SERVICE_HEADERS_JSON || '{}');\nconst patch = async () => {\n  try {\n    const r = await this.helpers.httpRequest({ method: 'PATCH', url: String(C.JOB_STORE_API_URL).replace(/\\/+$/, '') + '/jobs/' + encodeURIComponent(job.id), body: { state, result, ...(dropped.length ? { result_trimmed: dropped } : {}) }, json: true, headers, timeout: Number(C.REQUEST_TIMEOUT_MS), returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return r.statusCode;\n  } catch (e) { return null; }\n};\nlet code = null;\nfor (let i = 0; i < 3; i++) {\n  code = await patch();\n  if ((code >= 200 && code < 300) || code === 409) break;\n  if (code !== null && code < 500 && code !== 429 && code !== 408) break;\n  await sleep(300 * (i + 1));\n}\nif (!((code >= 200 && code < 300) || code === 409)) notes.push({ text: `Job ${job.id} (${ident}) finished (HTTP ${status}) but its result could NOT be saved to the job store (${code === null ? 'no response' : 'HTTP ' + code}). The caller will see the job as lost once its lease runs out.` });\nreturn [{ json: { notifications: notes } }];"
+      },
+      "id": "g-52",
+      "name": "Save Job Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        12320,
+        150
+      ],
+      "notes": "Saves the reply as the job result: succeeded when the reply is 2xx, failed otherwise, with the real http_status and body. Big results lose the optional fields first (marked result_trimmed), then become job_result_too_large. Three tries; if all fail, ops is told."
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "reports/jobs",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g-53",
+      "name": "Webhook: Job Status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "GET ?job_id=... (same token header as the main endpoint). Returns the job state and, when finished, the result the caller would have got synchronously.",
+      "webhookId": "report-jobs"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-54",
+              "leftValue": "={{ String($json.webhookUrl || '').endsWith('/jobs') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-54",
+      "name": "Is Job Status?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "notes": "Both webhooks share the one CONFIG node, then split here."
+    },
+    {
+      "parameters": {
+        "jsCode": "const C = $('CONFIG').first().json;\nconst bad = [];\nconst url = (v) => /^https?:\\/\\//.test(v || '');\nif (!['off', 'optional', 'always'].includes(C.ASYNC_MODE)) bad.push('CONFIG.ASYNC_MODE must be \"off\", \"optional\" or \"always\"');\nelse if (C.ASYNC_MODE !== 'off' && !url(C.JOB_STORE_API_URL)) bad.push('CONFIG.JOB_STORE_API_URL must start with http:// or https:// when ASYNC_MODE is not \"off\"');\nif (!(Number(C.JOB_LEASE_SECONDS) > 0)) bad.push('CONFIG.JOB_LEASE_SECONDS must be a number > 0');\nif (!(Number(C.JOB_RESULT_MAX_BYTES) >= 100)) bad.push('CONFIG.JOB_RESULT_MAX_BYTES must be a number of at least 100');\nconst inp = $input.first().json;\nconst reject = (status, error, details) => [{ json: { ok: false, http_status: status, response_body: { error, ...(details ? { details } : {}) } } }];\nif (C.REPORT_AUTH_TOKEN && (inp.headers || {})['x-report-token'] !== C.REPORT_AUTH_TOKEN) return reject(401, 'unauthorized');\nif (bad.length) return reject(500, 'report_misconfigured', bad);\nif (C.ASYNC_MODE === 'off') return reject(404, 'async_disabled');\nconst id = (inp.query || {}).job_id;\nif (typeof id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(id)) return reject(400, 'validation_failed', ['job_id query parameter is required: 1-128 characters, letters, digits and . _ : -']);\nreturn [{ json: { ok: true, job_id: id } }];"
+      },
+      "id": "g-55",
+      "name": "Plan Job Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        150
+      ],
+      "notes": "Order: auth (401), CONFIG (500), async switched off (404), job_id (400). The status call never starts any work."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c-56",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "g-56",
+      "name": "Status Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CONFIG').first().json.JOB_STORE_API_URL.replace(/\\/+$/, '') + '/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ $('CONFIG').first().json.SERVICE_HEADERS_JSON || '{}' }}",
+        "options": {
+          "timeout": "={{ $('CONFIG').first().json.REQUEST_TIMEOUT_MS }}",
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "g-57",
+      "name": "Get Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        150
+      ],
+      "notes": "GET /jobs/{id} -> 200 job | 404.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst id = $('Plan Job Status').first().json.job_id;\nconst reply = (status, body) => [{ json: { http_status: status, response_body: body } }];\nif (r.statusCode === 404) return reply(404, { error: 'job_not_found', job_id: id });\nconst b = r.body && typeof r.body === 'object' ? r.body : null;\nif (r.statusCode !== 200 || !b || b.id !== id || !['queued', 'running', 'succeeded', 'failed'].includes(b.state)) return reply(503, { error: 'job_store_unavailable', retry: true });\nif (b.kind !== 'report') return reply(404, { error: 'job_not_found', job_id: id });\nconst out = { job_id: id, state: b.state, created_at: b.created_at, updated_at: b.updated_at };\nif ((b.state === 'queued' || b.state === 'running') && b.expires_at && Date.parse(b.expires_at) < Date.now()) {\n  out.state = 'failed'; out.error = 'worker_lost'; out.message = 'The job did not finish in time (the workflow was probably restarted or stopped). Submit it again.';\n} else if (b.state === 'succeeded' || b.state === 'failed') {\n  if (b.result !== undefined) out.result = b.result;\n  if (b.result_trimmed) out.result_trimmed = b.result_trimmed;\n}\nreturn reply(200, out);"
+      },
+      "id": "g-58",
+      "name": "Job Status Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        150
+      ],
+      "notes": "Always HTTP 200 for a job that exists: the job's own outcome is in result.http_status. A queued/running job past its lease is reported as failed (worker_lost), so nothing stays \"running\" forever."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response_body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "g-59",
+      "name": "Respond Job Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1960,
+        150
+      ],
+      "notes": "The single reply of the status endpoint."
+    },
+    {
+      "parameters": {
+        "content": "## Scheduled Report Pipeline\n**Setup (about 10 minutes)**\n1. Run the backing services (the README gives the exact request and response each must answer): data sources, report store, subscriber list, mail sender, plus a Gotenberg (`docker run -p 3000:3000 gotenberg/gotenberg:8`) for real PDFs.\n2. Open **CONFIG**: edit `DATA_SOURCES_JSON` (your data sources: name, label, url, optional headers / required / timeout), the service URLs, `FALLBACK_RECIPIENT_EMAIL`, optional `SLACK_WEBHOOK_URL` and `REPORT_AUTH_TOKEN`.\n3. Check the **Weekly Schedule** node (Mondays 08:00 in the instance time zone), then activate.\n4. Backfill / re-run: `POST /webhook/reports/generate` with `{\"period_start\":\"2026-09-21\",\"period_end\":\"2026-09-27\"}` (add `\"force\":true` to resend a period that was already sent).\n\n**Each run:** claim the period (atomic) -> fetch sources -> render HTML -> PDF -> archive -> resolve recipients -> email each one -> record the outcome -> reply -> alert.",
         "height": 380,
         "width": 760,
         "color": 4
@@ -1205,6 +1645,191 @@
     }
   ],
   "connections": {
+    "Webhook: Job Status": {
+      "main": [
+        [
+          {
+            "node": "CONFIG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Async Requested?": {
+      "main": [
+        [
+          {
+            "node": "Create Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Job": {
+      "main": [
+        [
+          {
+            "node": "Job Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Verdict": {
+      "main": [
+        [
+          {
+            "node": "Job Created?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Created?": {
+      "main": [
+        [
+          {
+            "node": "Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Accepted": {
+      "main": [
+        [
+          {
+            "node": "Mark Running",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Async Job? (early)": {
+      "main": [
+        [
+          {
+            "node": "Save Job Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Async Job? (final)": {
+      "main": [
+        [
+          {
+            "node": "Save Job Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Job Status?": {
+      "main": [
+        [
+          {
+            "node": "Plan Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report Layout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Job Status": {
+      "main": [
+        [
+          {
+            "node": "Status Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Job": {
+      "main": [
+        [
+          {
+            "node": "Job Status Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Status Reply": {
+      "main": [
+        [
+          {
+            "node": "Respond Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Weekly Schedule": {
       "main": [
         [
@@ -1231,7 +1856,7 @@
       "main": [
         [
           {
-            "node": "Report Layout",
+            "node": "Is Job Status?",
             "type": "main",
             "index": 0
           }
@@ -1264,7 +1889,7 @@
       "main": [
         [
           {
-            "node": "Claim Run",
+            "node": "Async Requested?",
             "type": "main",
             "index": 0
           }
@@ -1272,6 +1897,17 @@
         [
           {
             "node": "Is Manual?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Running": {
+      "main": [
+        [
+          {
+            "node": "Claim Run",
             "type": "main",
             "index": 0
           }
@@ -1311,7 +1947,7 @@
         ],
         [
           {
-            "node": "Is Manual?",
+            "node": "Async Job? (early)",
             "type": "main",
             "index": 0
           }
@@ -1661,7 +2297,7 @@
       "main": [
         [
           {
-            "node": "Is Manual?",
+            "node": "Async Job? (final)",
             "type": "main",
             "index": 0
           }
@@ -1694,7 +2330,18 @@
       "main": [
         [
           {
-            "node": "Is Manual?",
+            "node": "Async Job? (final)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Job Result": {
+      "main": [
+        [
+          {
+            "node": "Expand Notifications",
             "type": "main",
             "index": 0
           }

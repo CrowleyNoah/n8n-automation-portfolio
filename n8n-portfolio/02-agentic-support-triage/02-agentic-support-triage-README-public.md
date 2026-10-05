@@ -40,6 +40,50 @@ If `CONFIG.TRIAGE_AUTH_TOKEN` is set, send it as header `x-triage-token`. The re
 
 Malformed JSON never reaches the workflow: n8n itself rejects it with a `4xx`.
 
+### Async mode: get a job id now, collect the answer later (optional, off by default)
+
+A slow model can keep the caller waiting over a minute. With async mode on, the workflow answers straight away with a job id and the caller picks up the result later. Think of a coat-check ticket: you hand the work over, get a number, and come back to the desk to ask "is it ready?".
+
+Turn it on in `CONFIG`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ASYNC_MODE` | `off` | `off`: always synchronous, the flags below are ignored. `optional`: synchronous unless the caller asks (`Prefer: respond-async` header or `?async=true`). `always`: every accepted ticket becomes a job. |
+| `JOB_STORE_API_URL` | blank | The job store (contract below). Required unless `off`; must be http or https. |
+| `JOB_LEASE_SECONDS` | 150 | How long a job may stay `queued` or `running` before it is reported as lost. Keep it above `MAX_RUN_SECONDS` plus one model timeout. |
+| `JOB_RESULT_MAX_BYTES` | 1000000 | Largest result stored (at least 100). A bigger result first loses its `tool_calls` trail (flagged `result_trimmed`); if it still does not fit, the job fails with `job_result_too_large`. |
+
+**Submit** the ticket exactly as before, with `?async=true` (or the `Prefer` header). Bad requests (400 bad input, 401, 500 bad CONFIG) are still refused on the spot and create no job.
+
+| Status | Body | When |
+|---|---|---|
+| 202 | `{job_id, state:"queued", status_url, retry_after_seconds}` plus `Location` and `Retry-After` headers | Accepted; the ticket is being worked. |
+| 200 | `{job_id, state, existing:true, status_url}` | A live or finished job already exists for this ticket (or for your `Idempotency-Key` header, which replaces the ticket id as the job key). Nothing runs twice. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store could not create the job. **Nothing was started**, so retrying is safe. |
+
+**Collect** with `GET /webhook/support/triage/jobs?job_id=<id>` (same `x-triage-token` header as the ticket endpoint):
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{job_id, state, created_at, updated_at, result?, result_trimmed?}` | `state` is `queued`, `running`, `succeeded` or `failed`. `result` is exactly what the synchronous call would have returned: `{http_status, body}`. A job is `succeeded` only if that status is 2xx; a 409 or 502 reply is a `failed` job carrying the real status and body. |
+| 200 | `{job_id, state:"failed", error:"worker_lost", message}` | The job was still queued or running past its lease (n8n restarted or the run died). **Submit the ticket again**: a lost job never blocks a new one. |
+| 400 / 401 | | Missing or malformed `job_id` / wrong token. |
+| 404 | `{error:"async_disabled"}` or `{error:"job_not_found"}` | Async is off, or the id is unknown or belongs to another workflow. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store is down. |
+
+The status call returns HTTP 200 for any job that exists; the ticket's own outcome is in `result.http_status`.
+
+**The job store.** A small HTTP service you run (the mock ships a reference version; put the same four calls in front of Redis, Postgres, Supabase and so on). All JSON, states `queued` → `running` → `succeeded` | `failed`:
+
+| Call | Behaviour |
+|---|---|
+| `POST /jobs {kind, key?, lease_seconds}` | Creates a job; the **store** generates the unguessable `id`. `201 {id, state:"queued", created_at, expires_at}`. If `key` is given and a job with the same `(kind, key)` is queued, running (not expired) or succeeded, return `200 {…that job, existing:true}` instead. A failed or lost job does not block a new one. |
+| `PATCH /jobs/{id} {state:"running", lease_seconds}` | `queued` → `running`, extends `expires_at`. `409` if not queued. |
+| `PATCH /jobs/{id} {state:"succeeded"\|"failed", result, result_trimmed?}` | Final write. `409` if already final: the first write wins. |
+| `GET /jobs/{id}` | `200 {id, kind, state, created_at, updated_at, expires_at, result?, result_trimmed?}` or `404`. |
+
+Send job-store credentials with `SERVICE_HEADERS_JSON`. If saving the result fails three times the ticket is still handled, ops get a Slack notice naming the job, and the job is left `running` so the lease reports it lost.
+
 ## Architecture
 
 ```
@@ -105,6 +149,7 @@ POST /support/triage
 | `LLM_TIMEOUT_MS` / `TOOL_TIMEOUT_MS` / `REQUEST_TIMEOUT_MS` | 30000 / 10000 / 10000 | Per-call timeouts (model / tools / email, helpdesk, state, Slack). |
 | `MAX_RUN_SECONDS` | 90 | Agent time budget, checked before each model call. |
 | `CLAIM_TTL_SECONDS` | 300 | How long a claim holds if the workflow dies mid-run. |
+| `ASYNC_MODE` / `JOB_STORE_API_URL` / `JOB_LEASE_SECONDS` / `JOB_RESULT_MAX_BYTES` | `off` / blank / 150 / 1000000 | Optional async mode (job id now, result later); see "Async mode" above. |
 
 ## Service contract
 
@@ -137,6 +182,9 @@ The model is called as OpenAI chat completions (`messages`, `temperature: 0.1`) 
 | Customer email fails | `reply:"failed"`; ops alerted; answer still returned. |
 | Slack down | No effect on tickets. |
 | Invalid CONFIG | 500 `triage_misconfigured` naming every bad setting. |
+| Job store down at submit (async) | 503 `job_store_unavailable`; nothing started. |
+| Job store down when marking "running" (async) | The ticket is still worked; the job just stays `queued` until it finishes. |
+| Result cannot be saved after 3 tries (async) | Ticket handled; ops alerted with the job id; the job is reported lost after its lease. |
 
 ## Verification
 
@@ -155,9 +203,10 @@ Tested end to end on self-hosted n8n 2.35.7 against in-memory reference implemen
 - state store down at the start, and switched off mid-run; customer email failing; Slack failing
 - the Agent Playbook: a new tool added by pasting one entry (listed in the prompt, called, owner field hidden, `result_key` shaping), the ownership and verified-order rules applying to it without extra code, and a playbook with nine kinds of mistake refused with a clear `500`; deliberately weakening the ownership or verified-order settings makes the suite fail (6 and 1 checks respectively)
 - the Agent Playbook's screening block: sensitive words in Spanish, French and German (including a compound word and a word written without its accent), capitals and accents ignored, whole words only ("processus" is not "proces"), extra words you add, a language that is not switched on staying off, refund promises in Spanish, French, German and an extra phrase held back until a real refund check ran, and a block with 12 kinds of mistake refused with a clear `500`; with accents not folded the exact spelling is required; deliberately weakening the screen in seven ways makes the suite fail
+- async mode: off by default (flags ignored, status endpoint 404); a 202 well before the work ends; the job moving queued → running → succeeded with a result equal to the synchronous reply; failures stored as failed jobs; bad requests refused with no job; the same ticket never runs twice; job store down at submit; result saves retried, then an alert; lost jobs reported after the lease; oversize results trimmed or failed; status endpoint auth and bad ids; `always` mode. Deliberately weakening the async logic in 13 ways makes the suite fail
 - secured configuration (webhook token, service API key, model header), draft mode, no email / no Slack, stricter limits and custom keywords (including Slack escaping), time budget and model timeout, broken CONFIG reported with every problem named
 
-Not tested: a real language model (the model here is a script, so classification quality, answer quality and real prompt-injection resistance are unproven), real order / helpdesk / email services, n8n 1.x, queue mode, very large message volumes.
+Not tested: a real job store (only the reference one in the test server), a real language model (the model here is a script, so classification quality, answer quality and real prompt-injection resistance are unproven), real order / helpdesk / email services, n8n 1.x, queue mode, very large message volumes.
 
 ## Known limits
 
@@ -169,4 +218,8 @@ Not tested: a real language model (the model here is a script, so classification
 - **The caller waits for the whole run.** With a slow model that can be over a minute; the time budget is checked between model calls, so the worst case is the budget plus one model timeout (and one retry).
 - **The state store must provide an atomic claim.** A read-then-write implementation reintroduces double runs.
 - **Notices are best effort.** A failed Slack alert is not retried.
+- **Async mode needs a job store you run.** The mock ships a reference one, not a production service, and async was tested against that mock only.
+- **Async work still runs inside one n8n execution.** A restart or n8n's own execution timeout ends it; the lease then reports the job lost and the caller submits again (a lost job never blocks a resubmit; the ticket claim expires after `CLAIM_TTL_SECONDS`, so an immediate resubmit may get a job whose result is `409 ticket_in_progress`).
+- **Async has no push notification.** The caller polls the status endpoint. A callback URL is deliberately left out (it needs the same care about which addresses it may call as any outbound URL); adding one means a new node that calls your URL, and the URL must be checked the same way.
+- **Anyone holding the workflow token can read that workflow's jobs.** Job ids are unguessable but behave like bearer secrets. Many async submissions at once all run at once; use n8n queue mode or a gateway to cap that.
 - n8n's own `422` for malformed JSON includes a stack trace in its body; put a gateway in front if that matters.

@@ -82,6 +82,52 @@ The reply has the usual `counts` and `results` (each result also names its `dead
 
 If a record loaded but the store could not be told (`resolve_failed`), ops are told which dead letter it is; it appears as open again when its claim lease runs out, and replaying it again is harmless because of the idempotency key.
 
+## Async mode: get a job id now, collect the answer later (optional, off by default)
+
+Loading a big batch, or replaying many dead letters, can keep the caller waiting a long time. With async mode on, **both** `POST /webhook/etl/ingest` and `POST /webhook/etl/replay` can answer straight away with a job id, and the caller picks up the result later. Think of a coat-check ticket: you hand the work over, get a number, and come back to the desk to ask "is it ready?".
+
+Turn it on in `CONFIG`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ASYNC_MODE` | `off` | `off`: always synchronous, the flags below are ignored. `optional`: synchronous unless the caller asks (`Prefer: respond-async` header or `?async=true`). `always`: every accepted request becomes a job. |
+| `JOB_STORE_API_URL` | blank | The job store (contract below). Required unless `off`; must be http or https. |
+| `JOB_LEASE_SECONDS` | 300 | How long a job may stay `queued` or `running` before it is reported lost. **Must be larger than `MAX_LOAD_SECONDS`**, or the check refuses to start. |
+| `JOB_RESULT_MAX_BYTES` | 1000000 | Largest result stored (at least 100). A bigger result first loses the rows of records that loaded, then the whole per-record list (`result_trimmed` says which); the counts and status always stay. If it still does not fit, the job fails with `job_result_too_large`. |
+
+**Submit** exactly as before, adding `?async=true` (or the `Prefer` header). Bad requests (400, 401, 403 replay off, 500 bad CONFIG) are still refused on the spot and create no job.
+
+| Status | Body | When |
+|---|---|---|
+| 202 | `{job_id, state:"queued", status_url, retry_after_seconds}` plus `Location` and `Retry-After` headers | Accepted; the work is running. |
+| 200 | `{job_id, state, existing:true, status_url}` | You sent an `Idempotency-Key` header and a live or finished job with that key already exists. Nothing runs twice. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store could not create the job. **Nothing was started** (for replay: no dead letter was read or claimed), so retrying is safe. |
+
+**Why jobs are keyed only by the `Idempotency-Key` header, not by `batch_id`:** re-sending a batch is a normal way to retry (the destination de-duplicates on the idempotency key of each record), and a finished job for that `batch_id` would block it. Send an `Idempotency-Key` yourself when you want "never start this twice".
+
+**Collect** with `GET /webhook/etl/jobs?job_id=<id>`. The token follows the kind of job: an ingest job needs `x-etl-token` (when `ETL_AUTH_TOKEN` is set), a replay job needs `x-replay-token`. A token only ever shows its own kind of job; the other kind looks like "not found".
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{job_id, state, created_at, updated_at, result?, result_trimmed?}` | `state` is `queued`, `running`, `succeeded` or `failed`. `result` is exactly what the synchronous call would have returned: `{http_status, body}`. A job is `succeeded` when that status is 2xx. A batch that came out `partial` is still a succeeded job: look at `result.body.status` and `counts`. |
+| 200 | `{job_id, state:"failed", error:"worker_lost", message}` | Still queued or running past its lease (n8n restarted or the run died). **Submit again**: a lost job never blocks a new one, and the destination de-duplicates records already loaded. |
+| 400 / 401 | | Missing or malformed `job_id` / no matching token. |
+| 404 | `{error:"async_disabled"}` or `{error:"job_not_found"}` | Async is off, or the id is unknown, belongs to another workflow, or is a kind your token cannot see. |
+| 503 | `{error:"job_store_unavailable", retry:true}` | The job store is down. |
+
+The status call returns HTTP 200 for any job that exists; the batch's own outcome is in `result.http_status` and `result.body`. A replay that finds the dead-letter store unreadable is a **failed** job carrying the real `502`.
+
+**The job store.** A small HTTP service you run (the mock ships a reference version; put the same four calls in front of Redis, Postgres, Supabase and so on). All JSON, states `queued` → `running` → `succeeded` | `failed`. Kinds used here: `etl_ingest` and `etl_replay`.
+
+| Call | Behaviour |
+|---|---|
+| `POST /jobs {kind, key?, lease_seconds}` | Creates a job; the **store** generates the unguessable `id`. `201 {id, state:"queued", created_at, expires_at}`. If `key` is given and a job with the same `(kind, key)` is queued, running (not expired) or succeeded, return `200 {…that job, existing:true}` instead. A failed or lost job does not block a new one. |
+| `PATCH /jobs/{id} {state:"running", lease_seconds}` | `queued` → `running`, extends `expires_at`. `409` if not queued. |
+| `PATCH /jobs/{id} {state:"succeeded"\|"failed", result, result_trimmed?}` | Final write. `409` if already final: the first write wins. |
+| `GET /jobs/{id}` | `200 {id, kind, state, created_at, updated_at, expires_at, result?, result_trimmed?}` or `404`. |
+
+Send job-store credentials with `SERVICE_HEADERS_JSON`. If saving the result fails three times the batch is still handled, ops get a Slack notice naming the job, and the job is left `running` so the lease reports it lost.
+
 ## Architecture
 
 ```
@@ -89,7 +135,7 @@ POST /etl/ingest
   → auth (optional) + CONFIG/schema check + envelope validation            (401 / 500 / 400)
   → validate and clean EVERY record against SCHEMA_JSON (nothing loaded yet)
   → Custom Rules (your transforms / rules / payload) → Enforce Rules (guard)   (500 if Custom Rules cannot run)
-  → LOAD the valid records one at a time:
+  → LOAD the valid records (one at a time, or LOAD_CONCURRENCY at a time):
         check the shared breaker (if configured)    open → skip everything
         POST each record with an idempotency key    transient failure → retry with back-off
                                                     4xx → rejected (data problem)
@@ -109,6 +155,12 @@ POST /etl/ingest
 7. **Retries with back-off** for transient failures (no response, 5xx, 408, 429): `LOAD_MAX_ATTEMPTS` tries, doubling the wait each time.
 8. **Breaker, two layers.** Consecutive failures within the batch (`BREAKER_TRIP_AFTER`) stop the rest. If you also run a shared breaker (`BREAKER_API_URL`), it is checked before the batch and after each failure, and failures are reported to it. A breaker that cannot be reached is ignored (reported as `unreachable`).
 9. **Time budget.** After `MAX_LOAD_SECONDS` the rest are skipped, so the caller is never held for ever.
+
+**Loading in parallel (`LOAD_CONCURRENCY`).** Think of one till versus four tills: with 1 (the default) records are sent one after another; with 4, four records are in flight at once and each finished till takes the next customer from the same queue. The rules do not change: every record keeps its own idempotency key and its own retries, the failure count, the circuit breaker and the time budget are shared by all the workers, and the reply is still in row order whatever finished first. What does change:
+- **Order is not kept at the destination.** Records can arrive out of order. If one record must exist before another (a parent before its children), keep `LOAD_CONCURRENCY=1` or send them in separate batches.
+- **A trip stops new work, not work already started.** When the breaker opens or the budget runs out, no new record starts, but up to `LOAD_CONCURRENCY - 1` records already running still finish (and can still fail), so the count of failures can overshoot `BREAKER_TRIP_AFTER` by that much.
+- **Your destination sees `LOAD_CONCURRENCY` requests at once.** Check its rate limit before raising it; a 429 is retried with back-off like any transient failure.
+- Replay uses the same loader, so it runs in parallel too.
 10. **Idempotency.** Every load carries `idempotency-key: batch_id:id`. A retry, or a resent batch, therefore does not create duplicates in an idempotent destination.
 11. **One dead-letter call per batch**, with the original records and reasons, and one retry. If it still fails the reply says so and ops is alerted. (The original made one call per record and ignored every failure.)
 12. **No data echoed.** The reply carries ids, statuses and reasons, not the records (which can hold personal data).
@@ -141,6 +193,7 @@ POST /etl/ingest
 | `DEAD_LETTER_API_URL` | `http://localhost:4900` | Dead-letter store. Blank = failed records appear only in the reply. |
 | `SLACK_WEBHOOK_URL` | blank | Slack-compatible incoming webhook. Blank = no alerts. |
 | `SERVICE_HEADERS_JSON` | `{}` | Headers sent to the destination, breaker and dead-letter store, e.g. `{"x-api-key":"..."}`. |
+| `LOAD_CONCURRENCY` | 1 | How many records are loaded at the same time (1-10). 1 = one at a time, exactly as before. Raise it when your destination is slow per call and can take parallel requests; see "Loading in parallel". |
 | `LOAD_MAX_ATTEMPTS` | 3 | Tries per record for transient failures. |
 | `LOAD_RETRY_BACKOFF_MS` | 500 | First wait between tries; doubles each time. |
 | `BREAKER_TRIP_AFTER` | 5 | Consecutive records that fail (after their retries) before the rest are skipped. |
@@ -151,6 +204,7 @@ POST /etl/ingest
 | `REPLAY_MAX_PER_RUN` | 50 | Most dead letters replayed per call (1 up to `MAX_BATCH_RECORDS`, at most 200). |
 | `REPLAY_LEASE_SECONDS` | 600 | How long a claimed dead letter stays claimed. Must be larger than `MAX_LOAD_SECONDS`. |
 | `REQUEST_TIMEOUT_MS` | 10000 | Timeout for breaker, dead-letter and Slack calls. |
+| `ASYNC_MODE` / `JOB_STORE_API_URL` / `JOB_LEASE_SECONDS` / `JOB_RESULT_MAX_BYTES` | `off` / blank / 300 / 1000000 | Optional async mode (job id now, result later); see "Async mode" above. |
 
 ### The schema
 
@@ -212,6 +266,9 @@ The workflow re-checks everything the store returns (state, batch, failure type)
 | Dead-letter store down | One retry, then `dead_letter:"failed"` in the reply and an alert saying how many records exist only in the reply. |
 | Replay: dead-letter store cannot be read | `502 replay_unavailable`, nothing run. |
 | Replay: a record loads but the store cannot be told | The reply lists it under `resolve_failed` and ops are told which dead letter; replaying it again is harmless (same idempotency key). |
+| Job store down at submit (async) | 503 `job_store_unavailable`; nothing started (a replay claims nothing). |
+| Job store down when marking "running" (async) | The work still runs; the job just stays `queued` until it finishes. |
+| Result cannot be saved after 3 tries (async) | Batch handled; ops alerted with the job id; the job is reported lost after its lease. |
 | Slack down or blank | No effect. |
 | Invalid CONFIG or schema | 500 `etl_misconfigured` naming every bad setting. |
 
@@ -227,19 +284,24 @@ Tested end to end on self-hosted n8n 2.35.7 against in-memory reference implemen
 - dead-letter store failing once (retried) and down (reply says so, ops alerted)
 - the same batch sent twice; a 500-record batch
 - a different schema (pattern, integer limits, enum, boolean, defaults, extra fields, a different `ID_FIELD`)
+- async mode (ingest and replay): off by default (flags ignored, status endpoint 404); a 202 well before the load ends with Location and Retry-After; the job moving queued → running → succeeded with a result equal to the synchronous reply; partial batches as succeeded jobs; replay as a job (claims only after the job exists, job store down claims nothing, "nothing to replay", an unreadable dead-letter store as a failed 502 job); bad requests refused with no job; the same `Idempotency-Key` never runs twice while the same `batch_id` can be re-sent; a failed "mark running"; result saves retried, then a Slack alert; lost jobs reported after the lease; oversize results trimmed in two steps or failed; status endpoint with a token per kind of job, bad ids, other workflows' jobs, store down; `always` mode; bad settings (including a lease shorter than the load budget) named in the `500`. Deliberately weakening the async logic in 14 ways makes the suite fail
 - caller token and service API keys; no Slack / shared breaker / dead-letter store; a 2 s time budget; broken CONFIG and schema
 
-Not tested: a real destination, breaker or dead-letter service; n8n 1.x; queue mode; batches over 500 records; a destination slower than the timeouts in a long batch beyond the time-budget test.
+Not tested: a real job store (only the reference one in the mock), a real destination, breaker or dead-letter service; n8n 1.x; queue mode; batches over 500 records; a destination slower than the timeouts in a long batch beyond the time-budget test.
 
 ## Known limits
 
-- **Synchronous.** The caller waits while the valid records are loaded one at a time. 500 records took about 1.3 seconds against a local mock; against a real API it is roughly records times latency, capped by `MAX_LOAD_SECONDS`. If your sender's timeout is shorter, lower the cap or send smaller batches.
+- **Synchronous unless you turn async mode on.** By default the caller waits while the valid records are loaded (one at a time unless you raise `LOAD_CONCURRENCY`). 500 records took about 1.3 seconds against a local mock; against a real API it is roughly records times latency, capped by `MAX_LOAD_SECONDS`. If your sender's timeout is shorter, lower the cap or send smaller batches.
 - **The loader is one Code node.** That is deliberate (the breaker needs state between records, which n8n's node-by-node flow does not give), but it is less visual than a chain of nodes.
-- **Sequential loading.** One record at a time keeps the breaker honest and the destination calm, and is slower than parallel loading.
+- **Loading is one at a time by default.** That keeps the breaker exact and the destination calm. `LOAD_CONCURRENCY` (up to 10) loads several at once, but the destination then sees them in no guaranteed order and a tripped breaker may let a few in-flight records finish. Parallel loading was tested against the mock, not a real rate-limited API.
 - **Resending a batch re-attempts every record.** It is safe only if the destination is idempotent on the key or the record id. There is no batch-level "already processed" memory.
 - **No half-way recovery.** If n8n dies during the load, the caller gets an error and the batch must be resent; the records already loaded are protected only by the destination's idempotency.
 - **Replay is a request, not a schedule.** Something (you, a cron job, a person reviewing the dead letters) has to call `POST /webhook/etl/replay`; the workflow does not retry dead letters on its own. A replay only helps when the cause has been fixed, and a record that is invalid under the current schema simply stays open with its new reason.
 - **Dates without a time zone are treated as UTC.**
 - **Rounding is half away from zero** at the configured decimals; the workflow does not do currency-aware arithmetic.
 - **The breaker is simple:** consecutive failures within one batch plus an optional shared one. It does not half-open or probe by itself.
+- **Async mode needs a job store you run.** The mock ships a reference one, not a production service, and async was tested against that mock only.
+- **Async work still runs inside one n8n execution.** A restart or n8n's own execution timeout ends it; the lease then reports the job lost and the caller submits again (safe, because the destination de-duplicates on the idempotency key). A replay interrupted this way leaves its dead letters claimed until `REPLAY_LEASE_SECONDS` runs out.
+- **Async has no push notification.** The caller polls the status endpoint. A callback URL is deliberately left out (it needs the same care about which addresses it may call as any outbound URL); adding one means a new node that calls your URL, and the URL must be checked the same way.
+- **Anyone holding a workflow token can read that kind of job.** Job ids are unguessable but behave like bearer secrets. Many async submissions at once all run at once; use n8n queue mode or a gateway to cap that.
 - n8n's own `422` for malformed JSON includes a stack trace in its body; put a gateway in front if that matters.
