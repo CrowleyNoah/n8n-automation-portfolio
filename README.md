@@ -102,7 +102,7 @@ If you're skimming rather than reading all 12:
 ## Repo layout
 
 ```
-n8n-portfolio/
+n8n-automation-portfolio/
 ├── README.md                                         ← this file
 ├── 01-rag-knowledge-assistant/
 │   ├── 01-rag-knowledge-assistant-workflow.json      ← import into n8n
