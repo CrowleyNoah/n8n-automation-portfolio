@@ -223,7 +223,7 @@
         -1620,
         -680
       ],
-      "notes": "Atomic compare-and-set, valid for PROBE_CLAIM_TTL_SECONDS. When the cooldown ends and several queued requests all become eligible, exactly one gets claimed:true and makes the real test call; the rest degrade. The atomicity lives in your state service -- see README.",
+      "notes": "Atomic compare-and-set, valid for PROBE_CLAIM_TTL_SECONDS. When the cooldown ends and several queued requests all become eligible, exactly one gets claimed:true and makes the real test call; the rest degrade. The atomicity lives in your state service -- see README. The state service also returns a claim_token. The probe's result must send it back, so a slow owner whose claim was replaced cannot change the breaker.",
       "onError": "continueRegularOutput"
     },
     {
@@ -272,7 +272,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, is_probe: true, attempt: 1 } }];"
+        "jsCode": "const t = $json;\n// The claim response (merged in by Merge Probe Claim + State) carries claim_token. Older state services do not send one.\nconst tok = (t.body && typeof t.body.claim_token === 'string' && t.body.claim_token.length > 0) ? t.body.claim_token : null;\nconst claim_warning = tok ? null : 'claim_token_missing: state service returned no claim_token, falling back to legacy probe behaviour (late probe results will NOT be rejected)';\nif (!tok) console.warn('[gateway] WARNING ' + claim_warning + ' integration=' + t.integration);\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, is_probe: true, attempt: 1, claim_token: tok, claim_warning } }];"
       },
       "id": "g-probe-init",
       "name": "Init Call State (Probe)",
@@ -459,7 +459,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key,\n  max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt,\n  network_error: true, error_message: (t.error && t.error.message) || 'connection error', statusCode: null, body: null } }];"
+        "jsCode": "const t = $json;\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key,\n  max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt,\n  claim_token: t.claim_token || null, claim_warning: t.claim_warning || null,\n  network_error: true, error_message: (t.error && t.error.message) || 'connection error', statusCode: null, body: null } }];"
       },
       "id": "g-net-err-classify",
       "name": "Build Network Error Classification",
@@ -472,7 +472,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const t = $json;\nlet classification;\nif (t.network_error) classification = 'transient';\nelse if (t.statusCode === 429) classification = 'rate_limited';\nelse if (t.statusCode >= 200 && t.statusCode < 300) classification = 'success';\nelse if (t.statusCode >= 500) classification = 'transient';\nelse classification = 'permanent'; // other 4xx -- our request is wrong, the provider is fine\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key,\n  max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt,\n  statusCode: t.statusCode, body: t.body, headers: t.headers || {}, classification } }];"
+        "jsCode": "const t = $json;\nlet classification;\nif (t.network_error) classification = 'transient';\nelse if (t.statusCode === 429) classification = 'rate_limited';\nelse if (t.statusCode >= 200 && t.statusCode < 300) classification = 'success';\nelse if (t.statusCode >= 500) classification = 'transient';\nelse classification = 'permanent'; // other 4xx -- our request is wrong, the provider is fine\nreturn [{ json: { integration: t.integration, resource_path: t.resource_path, params: t.params, cache_key: t.cache_key,\n  max_staleness_seconds: t.max_staleness_seconds, is_probe: t.is_probe, attempt: t.attempt,\n  claim_token: t.claim_token || null, claim_warning: t.claim_warning || null,\n  statusCode: t.statusCode, body: t.body, headers: t.headers || {}, classification } }];"
       },
       "id": "g-classify",
       "name": "Classify Response",
@@ -598,7 +598,7 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ is_probe: $json.is_probe }) }}",
+        "jsonBody": "={{ JSON.stringify({ is_probe: $json.is_probe, ...($json.is_probe === true && $json.claim_token ? { claim_token: $json.claim_token } : {}) }) }}",
         "sendHeaders": true,
         "specifyHeaders": "json",
         "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
@@ -611,7 +611,7 @@
         140,
         -800
       ],
-      "notes": "A successful probe fully closes the breaker and resets its failure/trip counters server-side -- a successful call while already closed just resets the failure streak. Fire-and-forget: it doesn't gate the response, since the fetch itself already succeeded.",
+      "notes": "A successful probe fully closes the breaker and resets its failure/trip counters server-side -- a successful call while already closed just resets the failure streak. Fire-and-forget: it doesn't gate the response, since the fetch itself already succeeded. A probe sends its claim_token; if the service answers accepted:false (stale claim) nothing changes and the next node marks breaker_update:'ignored_stale_claim'.",
       "onError": "continueRegularOutput"
     },
     {
@@ -769,7 +769,7 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ is_probe: $json.is_probe, error_message: $json.network_error ? 'connection error' : ('HTTP ' + $json.statusCode), failure_threshold: Math.min(Number($('CONFIG').first().json.FAILURE_THRESHOLD), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).failure_threshold) || Number($('CONFIG').first().json.FAILURE_THRESHOLD)), cooldown_seconds: Math.max(Number($('CONFIG').first().json.COOLDOWN_SECONDS), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).cooldown_seconds) || 0), max_cooldown_seconds: $('CONFIG').first().json.MAX_COOLDOWN_SECONDS }) }}",
+        "jsonBody": "={{ JSON.stringify({ is_probe: $json.is_probe, ...($json.is_probe === true && $json.claim_token ? { claim_token: $json.claim_token } : {}), error_message: $json.network_error ? 'connection error' : ('HTTP ' + $json.statusCode), failure_threshold: Math.min(Number($('CONFIG').first().json.FAILURE_THRESHOLD), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).failure_threshold) || Number($('CONFIG').first().json.FAILURE_THRESHOLD)), cooldown_seconds: Math.max(Number($('CONFIG').first().json.COOLDOWN_SECONDS), Number((($('Gateway Rules').first().json.rules.eff || {})[$json.integration] || {}).cooldown_seconds) || 0), max_cooldown_seconds: $('CONFIG').first().json.MAX_COOLDOWN_SECONDS }) }}",
         "sendHeaders": true,
         "specifyHeaders": "json",
         "jsonHeaders": "={{ $('CONFIG').first().json.STATE_API_HEADERS_JSON || '{}' }}"
@@ -782,7 +782,7 @@
         140,
         -60
       ],
-      "notes": "The thresholds travel with the request, so tuning the breaker means editing CONFIG, not the service. A failed probe re-opens the breaker immediately with a longer cooldown (the service doubles it per trip, capped at MAX_COOLDOWN_SECONDS).",
+      "notes": "The thresholds travel with the request, so tuning the breaker means editing CONFIG, not the service. A failed probe re-opens the breaker immediately with a longer cooldown (the service doubles it per trip, capped at MAX_COOLDOWN_SECONDS). A probe sends its claim_token; a stale claim is ignored by the service and is NOT counted as a failure.",
       "onError": "continueRegularOutput"
     },
     {
@@ -880,7 +880,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: t.is_probe ? 'probe_failed' : 'transient_retries_exhausted', retry_after_seconds: C.DEGRADE_RETRY_AFTER_SECONDS } }];"
+        "jsCode": "const C = $('CONFIG').first().json;\nconst t = $json;\nreturn [{ json: { integration: t.integration, cache_key: t.cache_key, max_staleness_seconds: t.max_staleness_seconds, degrade_reason: t.is_probe ? 'probe_failed' : 'transient_retries_exhausted', retry_after_seconds: C.DEGRADE_RETRY_AFTER_SECONDS, breaker_update: t.breaker_update || null } }];"
       },
       "id": "g-tr-exhausted-degrade",
       "name": "Mark Degrade: Transient (Exhausted)",
@@ -1193,7 +1193,7 @@
         "width": 640,
         "height": 500,
         "color": 4,
-        "content": "## Rate-Limited API Gateway with Circuit Breaker\n**Setup (about 5 minutes)**\n1. Run a state service that implements the HTTP contract in the README.\n2. Open the **CONFIG** node and set the three service URLs, `STATE_API_HEADERS_JSON` if your service needs auth, and `PROVIDERS_JSON` (one entry per API you front).\n3. Activate the workflow and POST to `/webhook/gateway/fetch`.\n\n**Adding another API** = add a key to `PROVIDERS_JSON`. No node changes.\n\n**Tuning** (thresholds, cooldowns, retries, timeouts) = CONFIG only.\n\n**Per-API rules** (allowed paths and parameters, fields to remove, staleness limit, no caching, fewer attempts) = the data-only **Gateway Rules** node.\n\nNothing else in this workflow contains a URL, secret or limit."
+        "content": "## Rate-Limited API Gateway with Circuit Breaker\n**Setup (about 5 minutes)**\n1. Run a state service that implements the HTTP contract in the README.\n2. Open the **CONFIG** node and set the three service URLs, `STATE_API_HEADERS_JSON` if your service needs auth, and `PROVIDERS_JSON` (one entry per API you front).\n3. Activate the workflow and POST to `/webhook/gateway/fetch`.\n\n**Adding another API** = add a key to `PROVIDERS_JSON`. No node changes.\n\n**Tuning** (thresholds, cooldowns, retries, timeouts) = CONFIG only.\n\n**Per-API rules** (allowed paths and parameters, fields to remove, staleness limit, no caching, fewer attempts) = the data-only **Gateway Rules** node.\n\nNothing else in this workflow contains a URL, secret or limit.\n\n**Version 1.1.0**: a probe's result must carry its claim token. A late result from a probe whose claim was replaced is ignored (see README)."
       },
       "id": "g-sticky",
       "name": "Read Me First",
@@ -1262,6 +1262,34 @@
         -560
       ],
       "notes": "Gateway Rules: use_cache:false means nothing is stored for this integration."
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Apply Field Rules').first().json;\nconst r = $json || {};\nlet breaker_update;\nif (r.accepted === false) breaker_update = 'ignored_stale_claim';\nelse if (r.error || (r.accepted === undefined && r.status === undefined)) breaker_update = 'record_failed';\nelse if (ctx.is_probe === true && !ctx.claim_token) breaker_update = 'applied_without_claim_token';\nelse breaker_update = 'applied';\nif (breaker_update === 'ignored_stale_claim') console.warn('[gateway] ignored a late probe success for \"' + ctx.integration + '\": its claim was replaced');\nreturn [{ json: { integration: ctx.integration, is_probe: ctx.is_probe === true, breaker_update, breaker_update_reason: r.reason || null, claim_warning: ctx.claim_warning || null } }];"
+      },
+      "id": "g-s-mark",
+      "name": "Mark Breaker Update (Success)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        360,
+        -800
+      ],
+      "notes": "Reads the record-success answer. breaker_update is 'applied', 'ignored_stale_claim' (a late probe result from a replaced claim, nothing changed), 'applied_without_claim_token' (older state service) or 'record_failed' (service unreachable). The provider response is returned to the caller either way; this node only labels what happened to the breaker."
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Classify Response').first().json;\nconst r = $json || {};\nconst ok2xx = r.statusCode >= 200 && r.statusCode < 300;\nconst b = (r.body && typeof r.body === 'object') ? r.body : {};\nlet breaker_update;\nif (ok2xx && b.accepted === false) breaker_update = 'ignored_stale_claim';\nelse if (!ok2xx) breaker_update = 'record_failed';\nelse if (ctx.is_probe === true && !ctx.claim_token) breaker_update = 'applied_without_claim_token';\nelse breaker_update = 'applied';\nif (breaker_update === 'ignored_stale_claim') console.warn('[gateway] ignored a late probe failure for \"' + ctx.integration + '\": its claim was replaced');\nreturn [{ json: { breaker_update, breaker_update_reason: b.reason || null } }];"
+      },
+      "id": "g-tr-mark",
+      "name": "Mark Breaker Update (Failure)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        250,
+        -150
+      ],
+      "notes": "Reads the record-failure answer and labels it (see Mark Breaker Update (Success)). It also keeps that answer from overwriting the request state in the merge that follows, which is why it sits here and not after the merge. A stale-claim rejection is not a failure: the provider response still goes back as before."
     }
   ],
   "connections": {
@@ -1638,7 +1666,7 @@
       "main": [
         [
           {
-            "node": "Merge Breaker Failure + State",
+            "node": "Mark Breaker Update (Failure)",
             "type": "main",
             "index": 0
           }
@@ -1896,6 +1924,28 @@
           }
         ],
         []
+      ]
+    },
+    "Record Breaker Success": {
+      "main": [
+        [
+          {
+            "node": "Mark Breaker Update (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Breaker Update (Failure)": {
+      "main": [
+        [
+          {
+            "node": "Merge Breaker Failure + State",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
