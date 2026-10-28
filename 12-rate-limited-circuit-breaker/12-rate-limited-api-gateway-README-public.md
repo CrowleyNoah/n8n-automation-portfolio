@@ -46,6 +46,40 @@ Nothing is hardcoded. Every URL, auth header, limit, timeout and threshold lives
 
 If `CONFIG.GATEWAY_AUTH_TOKEN` is set, callers must send it as the `x-gateway-token` header.
 
+## Set up and call it
+
+This workflow needs three small state services (breaker, rate limiter, cache) that it can reach over HTTP. See "State service contract" below. Then:
+
+1. **Import** the workflow into n8n and open the `CONFIG` node.
+2. **Set the three state service URLs** (`BREAKER_API_URL`, `RATE_LIMIT_API_URL`, `CACHE_API_URL`) and your providers in `PROVIDERS_JSON`. They must be reachable *from where n8n runs*:
+
+| Where n8n runs | State services at | Your webhook URL (`BASE_URL`) |
+|---|---|---|
+| Your own computer | `http://localhost:PORT` | `http://localhost:5678/webhook/gateway/fetch` |
+| Docker on your computer | `http://host.docker.internal:PORT` | `http://localhost:5678/webhook/gateway/fetch` |
+| n8n Cloud | a public address (n8n Cloud cannot reach a service on your own computer; a tunnel works for testing, not production) | `https://YOUR-INSTANCE.app.n8n.cloud/webhook/gateway/fetch` (the Production URL on the Webhook node) |
+
+3. **Publish** (older n8n: Activate) the workflow. The production webhook runs the published version, so save and publish again after any change to `CONFIG`. If n8n reports a "Conflicting Webhook Path", another active workflow already uses `gateway/fetch`: deactivate it first, because two active workflows cannot share a webhook path.
+4. **Send a request** to `BASE_URL`:
+
+macOS / Linux (bash or zsh):
+
+```bash
+BASE_URL=http://localhost:5678/webhook/gateway/fetch    # n8n Cloud: your Cloud URL
+curl -X POST "$BASE_URL" \
+  -H 'content-type: application/json' \
+  -d '{"integration":"demo","resource_path":"items/1","params":{"page":1},"cache_key":"items-1"}'
+```
+
+Windows PowerShell (one line per command; `curl` there is an alias for a different command, so the bash example will not work):
+
+```powershell
+$BASE_URL = 'http://localhost:5678/webhook/gateway/fetch'    # n8n Cloud: your Cloud URL
+Invoke-RestMethod -Method Post -Uri $BASE_URL -ContentType 'application/json' -Body '{"integration":"demo","resource_path":"items/1","params":{"page":1},"cache_key":"items-1"}'
+```
+
+If the answer is `upstream_unavailable` with `transient_retries_exhausted` and `cache_available:false`, the gateway is running but cannot reach the provider or the state services: check the addresses in `CONFIG` and that you published after editing.
+
 ## Architecture
 
 ```
